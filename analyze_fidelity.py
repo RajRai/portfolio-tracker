@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -52,6 +53,22 @@ def add_weekend_zeros(returns: pd.Series) -> pd.Series:
     return pd.Series(out_vals, index=pd.DatetimeIndex(out_dates, name="Date"))
 
 
+ACCOUNTS_FILE = Path("data/accounts.json")  # or just Path("accounts.json")
+
+def load_accounts():
+    if not ACCOUNTS_FILE.exists():
+        print(f"⚠️  Warning: {ACCOUNTS_FILE} not found.")
+        exit()
+
+    try:
+        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Convert to tuples if needed
+            return [(item["id"], item["name"]) for item in data]
+    except Exception as e:
+        print(f"❌ Error reading {ACCOUNTS_FILE}: {e}")
+        return []
+
 def main():
     # ============================================================
     #  1. Configuration
@@ -66,11 +83,7 @@ def main():
 
     # --- Use merged CSVs instead of raw Fidelity exports ---
     BASE = Path("data")
-    accounts = [
-        ("ZREDACTED", "Cloud, Semiconductors, Energy, Utilities"),
-        ("ZREDACTED", "Optical Computing"),
-        ("ALL", "All Trading History"),
-    ]
+    accounts = load_accounts()
 
     # You can override with command-line arguments like:
     # python analyze_portfolio.py ZREDACTED ZREDACTED
