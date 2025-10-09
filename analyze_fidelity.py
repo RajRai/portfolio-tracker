@@ -3,14 +3,17 @@ import os
 import re
 import sys
 import pandas as pd
+import pytz
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 import quantstats as qs
 
 import pandas as pd
 import numpy as np
+
+ny_tz = pytz.timezone("America/New_York")
 
 def add_missing_zeros(returns: pd.Series) -> pd.Series:
     """
@@ -147,10 +150,10 @@ def main():
 
         def get_polygon_prices(symbols, start, end):
             all_prices = {}
-            today = pd.Timestamp.now().normalize()
+            today = pd.Timestamp.now(tz="America/New_York").normalize()
 
             for sym in symbols:
-                # --- 1. Historical daily prices (unadjusted) ---
+                # --- 1. Historical daily prices ---
                 url = (
                     f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/day/"
                     f"{start}/{end}?adjusted=false&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
@@ -166,31 +169,42 @@ def main():
                     continue
 
                 df = pd.DataFrame(data)
-                df["date"] = pd.to_datetime(df["t"], unit="ms")
-                df = df.set_index("date")["c"]
+                df["date"] = pd.to_datetime(df["t"], unit="ms")  # make tz-naive immediately
+                df = df.set_index("date")["c"].sort_index()
 
-                # --- 2. Try to get most recent intraday (15-min delayed) price ---
-                try:
-                    intraday_url = (
-                        f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/"
-                        f"{today.strftime('%Y-%m-%d')}/{today.strftime('%Y-%m-%d')}"
-                        f"?adjusted=false&sort=desc&limit=1&apiKey={POLYGON_KEY}"
-                    )
-                    r_intra = requests.get(intraday_url)
-                    if r_intra.status_code == 200:
-                        results = r_intra.json().get("results")
-                        if results:
-                            last_price = results[0]["c"]
-                            last_time = pd.to_datetime(results[0]["t"], unit="ms")
-                            df.loc[last_time] = last_price
-                    else:
-                        print(f"Error fetching intraday {sym}: {r_intra.text}")
-                except Exception as e:
-                    print(f"Exception fetching intraday {sym}: {e}")
+                # --- 2. Intraday (latest 15-min delayed) ---
+                intraday_url = (
+                    f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/"
+                    f"{today.strftime('%Y-%m-%d')}/{today.strftime('%Y-%m-%d')}"
+                    f"?adjusted=false&sort=desc&limit=1&apiKey={POLYGON_KEY}"
+                )
+                r_intra = requests.get(intraday_url)
+                if r_intra.status_code == 200:
+                    results = r_intra.json().get("results")
+                    if results:
+                        # polygon → naive datetime (same basis as df.index)
+                        last_time = datetime.fromtimestamp(results[0]["t"] / 1000)
+                        last_price = results[0]["c"]
+                        df.loc[last_time] = last_price
 
                 all_prices[sym] = df
 
-            return pd.DataFrame(all_prices).sort_index()
+            # --- 3. Combine tickers ---
+            prices = pd.DataFrame(all_prices).sort_index()
+
+            # --- 4. Strip all tz info (force naive, integer comparable) ---
+            prices.index = pd.to_datetime(prices.index).tz_localize(None)
+
+            # --- 5. Normalize timestamps: bump all to global max ---
+            latest_time = prices.index.max()
+            last_valid_row = prices.ffill().iloc[-1]
+            prices.loc[latest_time] = last_valid_row
+
+            # remove duplicates, sort
+            prices = prices[~prices.index.duplicated(keep="last")].sort_index()
+
+            return prices
+
 
 
         start = df["Run Date"].min().strftime("%Y-%m-%d")
@@ -251,7 +265,7 @@ def main():
 
         qs.reports.html(
             returns,
-            rf=.396,
+            rf=.0396,
             benchmark=spy_returns,
             output=out_path,
             title=f"Portfolio Analysis - {report_name}",
