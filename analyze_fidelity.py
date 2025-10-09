@@ -107,24 +107,51 @@ def main():
 
         def get_polygon_prices(symbols, start, end):
             all_prices = {}
+            today = pd.Timestamp.now().normalize()
+
             for sym in symbols:
+                # --- 1. Historical daily prices (unadjusted) ---
                 url = (
                     f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/day/"
-                    f"{start}/{end}?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
+                    f"{start}/{end}?adjusted=false&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
                 )
                 r = requests.get(url)
                 if r.status_code != 200:
                     print(f"Error fetching {sym}: {r.text}")
                     continue
+
                 data = r.json().get("results", [])
                 if not data:
                     print(f"No price data for {sym}")
                     continue
+
                 df = pd.DataFrame(data)
                 df["date"] = pd.to_datetime(df["t"], unit="ms")
                 df = df.set_index("date")["c"]
+
+                # --- 2. Try to get most recent intraday (15-min delayed) price ---
+                try:
+                    intraday_url = (
+                        f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/"
+                        f"{today.strftime('%Y-%m-%d')}/{today.strftime('%Y-%m-%d')}"
+                        f"?adjusted=false&sort=desc&limit=1&apiKey={POLYGON_KEY}"
+                    )
+                    r_intra = requests.get(intraday_url)
+                    if r_intra.status_code == 200:
+                        results = r_intra.json().get("results")
+                        if results:
+                            last_price = results[0]["c"]
+                            last_time = pd.to_datetime(results[0]["t"], unit="ms")
+                            df.loc[last_time] = last_price
+                    else:
+                        print(f"Error fetching intraday {sym}: {r_intra.text}")
+                except Exception as e:
+                    print(f"Exception fetching intraday {sym}: {e}")
+
                 all_prices[sym] = df
-            return pd.DataFrame(all_prices)
+
+            return pd.DataFrame(all_prices).sort_index()
+
 
         start = df["Run Date"].min().strftime("%Y-%m-%d")
         end = datetime.now().strftime("%Y-%m-%d")
@@ -183,6 +210,7 @@ def main():
 
         qs.reports.html(
             returns,
+            rf=4.14,
             benchmark=spy_returns,
             output=out_path,
             title=f"Portfolio Analysis - {report_name}",

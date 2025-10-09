@@ -1,5 +1,6 @@
 import sys
-import time, os
+import time
+import os
 import pandas as pd
 from pathlib import Path
 import subprocess
@@ -29,7 +30,6 @@ def merge_statements(account_dir: Path):
         .drop_duplicates(subset=["Run Date", "Action", "Symbol", "Price", "Cash Balance", "Amount"])
     )
 
-    # Convert before sorting
     combined["Run Date"] = pd.to_datetime(combined["Run Date"], errors="coerce", infer_datetime_format=True)
     combined = combined.sort_values("Run Date").reset_index(drop=True)
 
@@ -43,24 +43,40 @@ def regenerate_reports():
     subprocess.run([sys.executable, "analyze_fidelity.py"], check=False)
     print("✅ Reports updated")
 
-def watch(interval=5):
+def watch(scan_interval=5, rebuild_interval=600):
+    """
+    Scan for new or changed CSVs every `scan_interval` seconds,
+    but force a full rebuild at least every `rebuild_interval` seconds.
+    """
     known_mtimes = {}
+    last_rebuild = 0
+
     while True:
+        now = time.time()
         changed = False
+
+        # --- Check for file changes ---
         for account_dir in BASE.iterdir():
             if not account_dir.is_dir():
                 continue
             statements = account_dir / "statements"
             if not statements.exists():
                 continue
+
             latest_mtime = max((f.stat().st_mtime for f in statements.glob("*.csv")), default=0)
             if known_mtimes.get(account_dir) != latest_mtime:
                 changed = True
                 known_mtimes[account_dir] = latest_mtime
                 merge_statements(account_dir)
-        if changed:
+
+        # --- Trigger rebuild if files changed OR time exceeded ---
+        if changed or (now - last_rebuild >= rebuild_interval):
+            if not changed:
+                print("⏰ Forced rebuild (10 minutes elapsed)")
             regenerate_reports()
-        time.sleep(interval)
+            last_rebuild = now
+
+        time.sleep(scan_interval)
 
 if __name__ == "__main__":
     watch()
