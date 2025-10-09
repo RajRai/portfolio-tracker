@@ -20,28 +20,42 @@ def main():
     if not POLYGON_KEY:
         raise RuntimeError("Missing POLYGON_API_KEY in .env")
 
-    # Support multiple CSVs
+    # --- Use merged CSVs instead of raw Fidelity exports ---
+    BASE = Path("data")
+    accounts = [
+        ("ZREDACTED", "Cloud, Semiconductors, Energy, Utilities"),
+        ("ZREDACTED", "Optical Computing"),
+        ("ALL", "All Trading History"),
+    ]
+
+    # You can override with command-line arguments like:
+    # python analyze_portfolio.py ZREDACTED ZREDACTED
     if len(sys.argv) > 1:
-        csv_paths = [Path(p) for p in sys.argv[1:]]
-    else:
-        csv_paths = [
-            (Path("Y:\\History_for_Account_ZREDACTED.csv"), 'Cloud, Semiconductors, Energy, Utilities'),
-            (Path("Y:\\History_for_Account_ZREDACTED.csv"), 'Optical Computing'),
-        ]
+        account_ids = sys.argv[1:]
+        accounts = [a for a in accounts if a[0] in account_ids]
 
     # ============================================================
-    #  Process each CSV
+    #  Process each account
     # ============================================================
 
-    for i, (csv_path, report_name) in enumerate(csv_paths):
+    for i, (account_id, report_name) in enumerate(accounts):
+        merged_csv = BASE / account_id / "combined.csv"
+        if not merged_csv.exists():
+            print(f"⚠️ Skipping {account_id} (no merged CSV found)")
+            continue
+
         print(f"\n===============================")
-        print(f"Processing {csv_path.name}")
+        print(f"Processing {account_id} → {report_name}")
         print(f"===============================")
 
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(merged_csv)
         df = df[pd.to_datetime(df["Run Date"], errors="coerce").notna()].copy()
         df["Run Date"] = pd.to_datetime(df["Run Date"])
         df = df.sort_values("Run Date")
+
+        # ============================================================
+        #  2. Parse trades
+        # ============================================================
 
         mask = df["Action"].str.contains(r"YOU (BOUGHT|SOLD)", flags=re.I, na=False)
         trades = df[mask].copy()
@@ -94,16 +108,14 @@ def main():
         print(f"Fetching Polygon prices {start} → {end}")
         prices = get_polygon_prices(symbols, start, end)
         if prices.empty:
-            print(f"⚠️ No pricing data for {csv_path.name}, skipping.")
+            print(f"⚠️ No pricing data for {account_id}, skipping.")
             continue
 
         # ============================================================
-        #  4. Reconstruct daily portfolio weights and compute returns
+        #  4. Portfolio reconstruction and returns
         # ============================================================
 
         position_df = pd.DataFrame(0.0, index=prices.index, columns=symbols)
-
-        # Track valid (executed) trades for later reporting
         valid_trades = []
 
         for _, row in trades.iterrows():
@@ -113,25 +125,19 @@ def main():
             if pd.isna(trade_date) or sym not in position_df.columns:
                 continue
 
-            # Determine current holdings before trade
             current_qty = (
                 position_df.loc[:trade_date, sym].iloc[-1]
                 if position_df.loc[:trade_date, sym].any()
                 else 0
             )
 
-            # Skip invalid sells that exceed holdings
             if current_qty + qty < 0:
                 print(f"⚠️ Ignoring invalid sell of {abs(qty)} {sym} on {row['Run Date'].date()} (no holdings)")
                 continue
 
-            # Apply trade
             position_df.loc[trade_date:, sym] += qty
-
-            # Record only valid ones
             valid_trades.append(row)
 
-        # Replace trades DataFrame with only valid trades
         trades = pd.DataFrame(valid_trades)
 
         position_df = position_df.ffill().fillna(0)
@@ -140,23 +146,43 @@ def main():
         asset_returns = prices.pct_change().fillna(0)
         returns = (weights.shift(1) * asset_returns).sum(axis=1).fillna(0)
 
-        # --- Current Weights (latest available day) ---
+        # ============================================================
+        #  5. QuantStats report generation
+        # ============================================================
+
+        out_dir = Path("out")
+        out_dir.mkdir(exist_ok=True)
+        out_path = out_dir / f"report_{i}.html"
+
+        spy_df = get_polygon_prices([BENCHMARK], start, end)
+        spy_returns = spy_df["SPY"].pct_change().fillna(0)
+
+        qs.reports.html(
+            returns,
+            benchmark=spy_returns,
+            output=out_path,
+            title=f"Portfolio Analysis - {report_name}",
+        )
+
+        print(f"✅ Report generated for {account_id}")
+
+        # ============================================================
+        #  6. Write weights/trades CSVs + index
+        # ============================================================
+
         latest_date = weights.index[-1]
-        current_weights = weights.loc[latest_date]
-        current_weights = current_weights[current_weights.abs() > 1e-6]  # drop zeros / dust
-        current_weights = current_weights.sort_values(ascending=False)
+        current_weights = weights.loc[latest_date].sort_values(ascending=False)
         current_weights_df = (
             current_weights.reset_index()
-            .rename(columns={"index": "Symbol", latest_date: "Weight"})
+            .rename(columns={"index": "Ticker", latest_date: "Portfolio Weight (%)"})
         )
-        current_weights_df["Weight"] = (current_weights_df["Weight"] * 100).map(lambda x: f"{x:.2f}%")
+        current_weights_df["Portfolio Weight (%)"] = (
+                current_weights_df["Portfolio Weight (%)"] * 100
+        ).map(lambda x: f"{x:.2f}%")
 
-        # --- Normalize trades by portfolio value at trade date ---
         portfolio_value = value_df.sum(axis=1)
-
         trades_pct = trades.copy()
         trade_values = []
-
         for _, row in trades.iterrows():
             trade_date = portfolio_value.index[portfolio_value.index >= row["Run Date"]].min()
             if pd.isna(trade_date):
@@ -167,26 +193,42 @@ def main():
             pct_of_account = 100 * trade_val / account_val if account_val > 0 else float("nan")
             trade_values.append(pct_of_account)
 
-        trades_pct["PercentOfAccount"] = [f'{round(x, 2)}%' for x in trade_values]
+        trades_pct["Trade Size (% of Account)"] = [f"{round(x, 2)}%" for x in trade_values]
+
+        weights_csv_path = out_dir / f"weights_{i}.csv"
+        trades_csv_path = out_dir / f"trades_{i}.csv"
+
+        current_weights_df.to_csv(weights_csv_path, index=False)
+        trades_pct[["Run Date", "symbol", "side", "price", "Trade Size (% of Account)"]].rename(
+            columns={
+                "Run Date": "Date",
+                "symbol": "Ticker",
+                "side": "Action",
+                "price": "Trade Price ($)",
+            }
+        ).to_csv(trades_csv_path, index=False)
+
+        accounts_entry = {
+            "id": account_id,
+            "name": report_name,
+            "report": f"/reports/report_{i}.html",
+            "weights": f"/data/weights_{i}.csv",
+            "trades": f"/data/trades_{i}.csv",
+        }
+
+        index_path = out_dir / "accounts.json"
+        if index_path.exists():
+            accounts_list = pd.read_json(index_path).to_dict(orient="records")
+        else:
+            accounts_list = []
+        accounts_list = [a for a in accounts_list if a["id"] != account_id]
+        accounts_list.append(accounts_entry)
+        pd.DataFrame(accounts_list).to_json(index_path, orient="records", indent=2)
+
+        print(f"✅ CSVs generated for {account_id}")
 
         # ============================================================
-        #  5. Generate QuantStats Report
-        # ============================================================
-
-        print("Getting benchmark data...")
-        spy_df = get_polygon_prices([BENCHMARK], start, end)
-
-        print("Generating QuantStats report...")
-        spy_returns = spy_df["SPY"].pct_change().fillna(0)
-
-        out_dir = Path("out")
-        out_dir.mkdir(exist_ok=True)
-        out_path = out_dir / f"report_{i}.html"
-
-        qs.reports.html(returns, benchmark=spy_returns, output=out_path, title=f"Portfolio Analysis - {report_name}")
-
-        # ============================================================
-        #  6. Append weights + trades to the QuantStats report
+        #  7. Append weights + trades to the QuantStats report
         # ============================================================
 
         current_weights_df = current_weights_df.rename(columns={
@@ -230,36 +272,7 @@ def main():
             ))
 
 
-        print(f"✅ Report generated: {out_path}")
-
-        # ============================================================
-        #  7. Write CSV data for API server
-        # ============================================================
-
-        weights_csv_path = out_dir / f"weights_{i}.csv"
-        trades_csv_path = out_dir / f"trades_{i}.csv"
-
-        current_weights_df.to_csv(weights_csv_path, index=False)
-        trades_pct[["Date", "Ticker", "Action", "Trade Price ($)", "Trade Size (% of Account)"]].to_csv(trades_csv_path, index=False)
-
-        accounts_entry = {
-            "id": i,
-            "name": report_name,
-            "report": f"/reports/report_{i}.html",
-            "weights": f"/data/weights_{i}.csv",
-            "trades": f"/data/trades_{i}.csv"
-        }
-
-        index_path = out_dir / "accounts.json"
-        if index_path.exists():
-            accounts = pd.read_json(index_path).to_dict(orient="records")
-        else:
-            accounts = []
-        accounts = [a for a in accounts if a["id"] != i]
-        accounts.append(accounts_entry)
-        pd.DataFrame(accounts).to_json(index_path, orient="records", indent=2)
-
-        print(f"✅ CSV written: {weights_csv_path}, {trades_csv_path}")
+        print(f"✅ Report modified: {out_path}")
 
 if __name__ == "__main__":
     main()
