@@ -77,6 +77,30 @@ def main():
 
         print(f"Detected symbols: {symbols}")
 
+        # --- Detect distributions (dividends, interest, etc.) ---
+        dist_mask = (
+            df["Action"].str.contains(r"DIVIDEND|INTEREST|DISTRIBUTION|REINVEST", flags=re.I, na=False)
+            & df["Type"].str.contains("Shares")
+        )
+        distributions = df[dist_mask].copy()
+
+        if not distributions.empty:
+            distributions["Run Date"] = pd.to_datetime(distributions["Run Date"])
+            distributions["side"] = "BUY"
+            distributions["symbol"] = distributions['Symbol']
+            distributions["price"] = 0.0
+            distributions["amount"] = 0.0
+            distributions['quantity'] = distributions['Quantity']
+            distributions = distributions.drop('Action', axis=1)
+            print(f"Detected {len(distributions)} distributions.")
+
+            # Append to trades
+            trades = (
+                pd.concat([trades, distributions], ignore_index=True)
+                .sort_values("Run Date")
+                .reset_index(drop=True)
+            )
+
         # ============================================================
         #  3. Get daily prices from Polygon.io
         # ============================================================
@@ -131,11 +155,11 @@ def main():
                 else 0
             )
 
-            if current_qty + qty < 0:
-                print(f"⚠️ Ignoring invalid sell of {abs(qty)} {sym} on {row['Run Date'].date()} (no holdings)")
+            if current_qty + qty < -sys.float_info.epsilon:
+                print(f"⚠️ Ignoring invalid sell of {abs(qty)} {sym} on {row['Run Date'].date()} ({current_qty + qty} after transaction)")
                 continue
 
-            position_df.loc[trade_date:, sym] += qty
+            position_df.loc[trade_date:, sym] = (position_df.loc[trade_date:, sym] + qty).clip(lower=0)
             valid_trades.append(row)
 
         trades = pd.DataFrame(valid_trades)
@@ -171,7 +195,10 @@ def main():
         # ============================================================
 
         latest_date = weights.index[-1]
-        current_weights = weights.loc[latest_date].sort_values(ascending=False)
+        current_weights = weights.loc[latest_date]
+        current_weights = current_weights[current_weights.abs() > sys.float_info.epsilon]
+        current_weights = current_weights.sort_values(ascending=False)
+
         current_weights_df = (
             current_weights.reset_index()
             .rename(columns={"index": "Ticker", latest_date: "Portfolio Weight (%)"})
