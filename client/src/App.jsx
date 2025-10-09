@@ -11,8 +11,11 @@ import {
     Select,
     Button,
     MenuItem,
+    IconButton,
+    Tooltip,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import GitHubIcon from "@mui/icons-material/GitHub";
 import CustomThemeDialog from "./components/CreateCustomTheme.jsx";
 import AccountTabs from "./components/AccountTabs.jsx";
 
@@ -80,6 +83,23 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
                         >
                             New Theme
                         </Button>
+
+                        {/* GitHub Link */}
+                        <Tooltip title="View on GitHub">
+                            <IconButton
+                                color="inherit"
+                                size="small"
+                                href="https://github.com/RajRai/portfolio-tracker"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                sx={{
+                                    ml: 1,
+                                    "&:hover": { color: "#ddd" },
+                                }}
+                            >
+                                <GitHubIcon />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
                 </Toolbar>
 
