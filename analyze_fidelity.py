@@ -25,8 +25,8 @@ def main():
         csv_paths = [Path(p) for p in sys.argv[1:]]
     else:
         csv_paths = [
-            (Path("Y:\\History_for_Account_ZREDACTED.csv"), 'Optical Computing'),
             (Path("Y:\\History_for_Account_ZREDACTED.csv"), 'Cloud, Semiconductors, Energy, Utilities'),
+            (Path("Y:\\History_for_Account_ZREDACTED.csv"), 'Optical Computing'),
         ]
 
     # ============================================================
@@ -231,6 +231,35 @@ def main():
 
 
         print(f"✅ Report generated: {out_path}")
+
+        # ============================================================
+        #  7. Write CSV data for API server
+        # ============================================================
+
+        weights_csv_path = out_dir / f"weights_{i}.csv"
+        trades_csv_path = out_dir / f"trades_{i}.csv"
+
+        current_weights_df.to_csv(weights_csv_path, index=False)
+        trades_pct[["Date", "Ticker", "Action", "Trade Price ($)", "Trade Size (% of Account)"]].to_csv(trades_csv_path, index=False)
+
+        accounts_entry = {
+            "id": i,
+            "name": report_name,
+            "report": f"/reports/report_{i}.html",
+            "weights": f"/data/weights_{i}.csv",
+            "trades": f"/data/trades_{i}.csv"
+        }
+
+        index_path = out_dir / "accounts.json"
+        if index_path.exists():
+            accounts = pd.read_json(index_path).to_dict(orient="records")
+        else:
+            accounts = []
+        accounts = [a for a in accounts if a["id"] != i]
+        accounts.append(accounts_entry)
+        pd.DataFrame(accounts).to_json(index_path, orient="records", indent=2)
+
+        print(f"✅ CSV written: {weights_csv_path}, {trades_csv_path}")
 
 if __name__ == "__main__":
     main()
