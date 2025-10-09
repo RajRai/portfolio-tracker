@@ -24,7 +24,7 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
     const theme = useTheme();
 
     useEffect(() => {
-        fetch("http://127.0.0.1:8000/api/accounts")
+        fetch("/api/accounts")
             .then((r) => r.json())
             .then((data) => {
                 setAccounts(data);

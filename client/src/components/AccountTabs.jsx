@@ -22,13 +22,13 @@ export default function AccountTabs({ account }) {
 
             <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
                 {tab === "analytics" && (
-                    <ReportFrame src={`http://127.0.0.1:8000${account.report}`} />
+                    <ReportFrame src={`${account.report}`} />
                 )}
                 {tab === "holdings" && (
-                    <CSVTable src={`http://127.0.0.1:8000${account.weights}`} title="Current Portfolio Holdings"/>
+                    <CSVTable src={`${account.weights}`} title="Current Portfolio Holdings"/>
                 )}
                 {tab === "transactions" && (
-                    <CSVTable src={`http://127.0.0.1:8000${account.trades}`} title="Trade History"/>
+                    <CSVTable src={`${account.trades}`} title="Trade History"/>
                 )}
             </div>
         </div>

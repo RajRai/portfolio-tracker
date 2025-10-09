@@ -1,16 +1,23 @@
 import os
-
-from flask import Flask, send_from_directory, jsonify, Response
-from pathlib import Path
 import json
+from pathlib import Path
+from flask import Flask, send_from_directory, jsonify
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
+# ============================================================
+#  Setup
+# ============================================================
+BASE_DIR = Path(__file__).parent.resolve()
+OUT_DIR = BASE_DIR / "out"
+CLIENT_DIR = BASE_DIR / "client" / "dist"
 
-# Base output directory for generated files
-OUT_DIR = Path("out").resolve()
+app = Flask(
+    __name__,
+    static_folder=str(CLIENT_DIR),
+    static_url_path="/"
+)
 
 # Only enable CORS in development
 if os.environ.get("FLASK_ENV") == "development":
@@ -38,7 +45,6 @@ def list_accounts():
 
     return jsonify(data)
 
-
 # ============================================================
 #  Serve QuantStats HTML reports
 # ============================================================
@@ -49,7 +55,6 @@ def serve_report(filename):
     if not report_path.exists():
         return jsonify({"error": f"Report {filename} not found"}), 404
     return send_from_directory(OUT_DIR, filename, mimetype="text/html")
-
 
 # ============================================================
 #  Serve CSV data (weights/trades)
@@ -62,27 +67,31 @@ def serve_data(filename):
         return jsonify({"error": f"Data file {filename} not found"}), 404
     return send_from_directory(OUT_DIR, filename, mimetype="text/csv")
 
-
 # ============================================================
-#  Root route
+#  React frontend routes
 # ============================================================
-@app.route("/")
-def index():
-    """Simple status message."""
-    return jsonify({
-        "message": "Portfolio server is running",
-        "available_routes": {
-            "/api/accounts": "List all accounts",
-            "/reports/<file>": "QuantStats HTML report",
-            "/data/<file>": "CSV data (weights, trades)"
-        }
-    })
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    """
+    Serve built React app (client/dist).
+    Any route not starting with /api/, /data/, or /reports will fall back to index.html.
+    """
+    # Let API and file routes through
+    if path.startswith("api/") or path.startswith("data/") or path.startswith("reports/"):
+        return jsonify({"error": "Not found"}), 404
 
+    target_path = CLIENT_DIR / path
+    if target_path.exists() and target_path.is_file():
+        return send_from_directory(CLIENT_DIR, path)
+    else:
+        # React router fallback
+        return send_from_directory(CLIENT_DIR, "index.html")
 
 # ============================================================
 #  Launch
 # ============================================================
 if __name__ == "__main__":
-    port = os.environ.get("FLASK_PORT") if os.environ.get("FLASK_PORT") else 8000
-    print(f"✅ Portfolio API server running at http://127.0.0.1:{port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    port = int(os.environ.get("FLASK_PORT", 8000))
+    print(f"✅ Portfolio API & frontend server running at http://127.0.0.1:{port}")
+    app.run(host="0.0.0.0", port=port)
