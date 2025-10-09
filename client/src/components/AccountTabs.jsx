@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Tabs, Tab } from "@mui/material";
+import { Tabs, Tab, Box } from "@mui/material";
 import ReportFrame from "./ReportFrame";
 import CSVTable from "./CSVTable.jsx";
 
@@ -7,30 +7,40 @@ export default function AccountTabs({ account }) {
     const [tab, setTab] = useState("analytics");
 
     return (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <Tabs
-                value={tab}
-                onChange={(_, v) => setTab(v)}
-                indicatorColor="primary"
-                textColor="primary"
-                variant="fullWidth"
+        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+            {/* ===== Inner Tabs Header ===== */}
+            <Box
+                sx={{
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 1000,
+                    backgroundColor: "background.paper",
+                    borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
+                }}
             >
-                <Tab value="analytics" label="Analytics" />
-                <Tab value="holdings" label="Holdings" />
-                <Tab value="transactions" label="Transactions" />
-            </Tabs>
+                <Tabs
+                    value={tab}
+                    onChange={(_, v) => setTab(v)}
+                    indicatorColor="primary"
+                    textColor="primary"
+                    variant="fullWidth"
+                >
+                    <Tab value="analytics" label="Analytics" />
+                    <Tab value="holdings" label="Holdings" />
+                    <Tab value="transactions" label="Transactions" />
+                </Tabs>
+            </Box>
 
-            <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                {tab === "analytics" && (
-                    <ReportFrame src={`${account.report}`} />
-                )}
+            {/* ===== Scrollable Content Area ===== */}
+            <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+                {tab === "analytics" && <ReportFrame src={account.report} />}
                 {tab === "holdings" && (
-                    <CSVTable src={`${account.weights}`} title="Current Portfolio Holdings"/>
+                    <CSVTable src={account.weights} title="Current Portfolio Holdings" />
                 )}
                 {tab === "transactions" && (
-                    <CSVTable src={`${account.trades}`} title="Trade History"/>
+                    <CSVTable src={account.trades} title="Trade History" />
                 )}
-            </div>
-        </div>
+            </Box>
+        </Box>
     );
 }
