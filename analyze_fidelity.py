@@ -12,45 +12,28 @@ import quantstats as qs
 import pandas as pd
 import numpy as np
 
-def add_weekend_zeros(returns: pd.Series) -> pd.Series:
+def add_missing_zeros(returns: pd.Series) -> pd.Series:
     """
-    Build a daily series from start..end where:
-      - trading days use the original return (exactly as-is)
-      - Saturdays/Sundays get 0.0 inserted
-      - missing weekdays are skipped (left out entirely)
-    No fillna/reindex used.
+    For all days between min and max date:
+      - If day exists in returns, keep its value.
+      - If missing, insert 0.0.
+    No assumptions about weekends or holidays.
     """
     r = returns.copy()
-
-    # normalize timestamps (your Polygon daily bars show 04:00:00)
     r.index = pd.to_datetime(r.index).normalize()
     r = r[~r.index.duplicated()].sort_index().astype(float)
 
-    start = r.index.min()
-    end   = r.index.max()
+    if r.empty:
+        return r
 
-    out_dates = []
-    out_vals  = []
+    start, end = r.index.min(), r.index.max()
+    full_range = pd.date_range(start, end, freq="D")
 
-    # fast lookup
+    # Build dict for fast lookup
     r_map = r.to_dict()
 
-    day = start
-    one_day = pd.Timedelta(days=1)
-    while day <= end:
-        if day in r_map:
-            # trading day present → use actual return
-            out_dates.append(day)
-            out_vals.append(r_map[day])
-        else:
-            # if it's weekend, explicitly add a 0.0 return
-            if day.weekday() >= 5:  # 5=Sat, 6=Sun
-                out_dates.append(day)
-                out_vals.append(0.0)
-            # else it's a weekday with no data → skip (do NOT fill)
-        day += one_day
-
-    return pd.Series(out_vals, index=pd.DatetimeIndex(out_dates, name="Date"))
+    out_vals = [r_map.get(day, 0.0) for day in full_range]
+    return pd.Series(out_vals, index=full_range, name="Date")
 
 
 ACCOUNTS_FILE = Path("data/accounts.json")  # or just Path("accounts.json")
@@ -253,7 +236,7 @@ def main():
         weights = value_df.div(value_df.sum(axis=1), axis=0).fillna(0)
         asset_returns = prices.pct_change().fillna(0)
         returns = (weights.shift(1) * asset_returns).sum(axis=1).fillna(0)
-        returns = add_weekend_zeros(returns)
+        returns = add_missing_zeros(returns)
 
         # ============================================================
         #  5. QuantStats report generation
