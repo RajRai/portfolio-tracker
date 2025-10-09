@@ -1,8 +1,7 @@
 import React, { useState } from "react";
 import { Tabs, Tab } from "@mui/material";
 import ReportFrame from "./ReportFrame";
-import HoldingsTable from "./HoldingsTable";
-import TransactionsTable from "./TransactionsTable";
+import CSVTable from "./CSVTable.jsx";
 
 export default function AccountTabs({ account }) {
     const [tab, setTab] = useState("analytics");
@@ -26,10 +25,10 @@ export default function AccountTabs({ account }) {
                     <ReportFrame src={`http://127.0.0.1:8000${account.report}`} />
                 )}
                 {tab === "holdings" && (
-                    <HoldingsTable src={`http://127.0.0.1:8000${account.weights}`} />
+                    <CSVTable src={`http://127.0.0.1:8000${account.weights}`} title="Current Portfolio Holdings"/>
                 )}
                 {tab === "transactions" && (
-                    <TransactionsTable src={`http://127.0.0.1:8000${account.trades}`} />
+                    <CSVTable src={`http://127.0.0.1:8000${account.trades}`} title="Trade History"/>
                 )}
             </div>
         </div>
