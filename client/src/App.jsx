@@ -43,7 +43,7 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
         return <Typography sx={{ m: 4 }}>No accounts found.</Typography>;
 
     return (
-        <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+        <Box sx={{ display: "flex", flexDirection: "column", height: "100dvh" }}>
             {/* ======= AppBar ======= */}
             <AppBar position="static" color="primary">
                 <Toolbar

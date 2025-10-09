@@ -89,7 +89,7 @@ export default function CSVTable({ src }) {
     return (
         <Paper
             sx={{
-                height: "calc(100vh - 200px)",
+                height: "calc(100dvh - 200px)",
                 width: "90%",
                 mx: "auto",
                 mt: 2,
