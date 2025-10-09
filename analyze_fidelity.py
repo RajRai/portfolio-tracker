@@ -69,7 +69,7 @@ def main():
     accounts = load_accounts()
 
     # You can override with command-line arguments like:
-    # python analyze_portfolio.py ZREDACTED ZREDACTED
+    # python analyze_portfolio.py REDACTED REDACTED
     if len(sys.argv) > 1:
         account_ids = sys.argv[1:]
         accounts = [a for a in accounts if a[0] in account_ids]
