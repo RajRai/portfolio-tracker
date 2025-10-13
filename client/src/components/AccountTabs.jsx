@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Tabs, Tab, Box } from "@mui/material";
-import ReportFrame from "./ReportFrame";
 import CSVTable from "./CSVTable.jsx";
+import PlotlyDashboard from "./PlotlyDashboard.jsx";
 
 export default function AccountTabs({ account }) {
     const [tab, setTab] = useState("analytics");
@@ -33,7 +33,7 @@ export default function AccountTabs({ account }) {
 
             {/* ===== Scrollable Content Area ===== */}
             <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                {tab === "analytics" && <ReportFrame src={account.report} />}
+                {tab === "analytics" && <PlotlyDashboard key={account.id} account={account} />}
                 {tab === "holdings" && (
                     <CSVTable src={account.weights} title="Current Portfolio Holdings" />
                 )}

@@ -190,6 +190,7 @@ def main():
         trades = pd.DataFrame(valid_trades)
 
         position_df = position_df.ffill().fillna(0)
+        position_df[(position_df.abs() < 1e-6)] = 0.0
         value_df = position_df * prices
         weights = value_df.div(value_df.sum(axis=1), axis=0).fillna(0)
         asset_returns = prices.pct_change().fillna(0)
@@ -216,6 +217,61 @@ def main():
         )
 
         print(f"✅ Report generated for {account_id}")
+
+        # =====================  A) Prep series for charts  =====================
+        # Normalize both to midnight (no time component) for exact matching
+        returns.index = pd.to_datetime(returns.index).normalize()
+        spy_returns.index = pd.to_datetime(spy_returns.index).normalize()
+
+        # Align on shared days
+        shared_index = returns.index.intersection(spy_returns.index)
+        port_ret = returns.loc[shared_index].astype(float)
+        bench_ret = spy_returns.loc[shared_index].astype(float)
+
+        # Compute equities
+        port_eq = (1 + port_ret).cumprod()
+        bench_eq = (1 + bench_ret).cumprod()
+
+        # Daily and cumulative spreads
+        daily_spread = (port_ret - bench_ret)
+        cum_spread   = (1.0 + daily_spread).cumprod() - 1.0  # relative cumulative out/under-performance
+
+        # Weights time series (already computed): `weights`
+        weights_top = weights.copy()
+        weights_top = weights_top.clip(lower=0).div(weights_top.sum(axis=1).replace(0, np.nan), axis=0).fillna(0)
+
+        # Export a single dict for JSON-less inline embedding (we’ll embed arrays directly)
+        def _series_to_pairs(s: pd.Series):
+            s = s.dropna()
+            return [{"t": d.strftime("%Y-%m-%d"), "v": float(v)} for d, v in s.items()]
+
+        def _frame_to_stacked_list(df: pd.DataFrame):
+            out = []
+            for col in df.columns:
+                s = df[col].dropna().copy()
+                # Keep alignment but replace zero weights with None
+                s[s.abs() < 1e-6] = None
+                if s.isna().all():
+                    continue
+                pts = [{"t": d.strftime("%Y-%m-%d"), "v": (None if pd.isna(v) else float(v))} for d, v in s.items()]
+                out.append({"name": col, "points": pts})
+            return out
+
+        chart_payload = {
+            "portfolio": {
+                "daily": _series_to_pairs(port_ret),
+                "equity": _series_to_pairs(port_eq),
+            },
+            "benchmark": {
+                "daily": _series_to_pairs(bench_ret),
+                "equity": _series_to_pairs(bench_eq),
+            },
+            "spread": {
+                "daily": _series_to_pairs(daily_spread),
+                "cumulative": _series_to_pairs(cum_spread),
+            },
+            "weights": _frame_to_stacked_list(weights_top),
+        }
 
         # ============================================================
         #  6. Write weights/trades CSVs + index
@@ -327,6 +383,14 @@ def main():
 
 
         print(f"✅ Report modified: {out_path}")
+
+        # =====================  B) Emit self-contained Plotly JSON =====================
+        interactive_json_path = out_dir / f"report_{i}_interactive.json"
+        interactive_json_path.write_text(
+            json.dumps(chart_payload, indent=2),
+            encoding="utf-8"
+        )
+        print(f"✅ Interactive JSON written: {interactive_json_path}")
 
 if __name__ == "__main__":
     main()

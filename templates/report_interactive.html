@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>Interactive Portfolio Dashboard — %%report_name%%</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+            margin: 24px;
+            color: #ddd;
+            background: #0f1116;
+        }
+
+        h1, h2 {
+            color: #fff;
+        }
+
+        .grid {
+            display: grid;
+            gap: 24px;
+            grid-template-columns:1fr;
+        }
+
+        .card {
+            background: #161a22;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, .35);
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .muted {
+            color: #9aa0a6;
+            font-size: 0.9rem;
+        }
+
+        .toggle-group button {
+            border: 1px solid #2b3244;
+            background: #1a1f2b;
+            color: #dfe2e7;
+            padding: 6px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .toggle-group button.active, .toggle-group button:hover {
+            border-color: #3d6cf5;
+        }
+
+        .plot {
+            width: 100%;
+            height: 420px;
+        }
+    </style>
+</head>
+<body>
+<h1>Interactive Portfolio Dashboard</h1>
+<div class="muted">%%report_name%%</div>
+
+<div class="row" style="margin:10px 0 18px;">
+    <div class="toggle-group" id="rangeButtons">
+        <button data-range="7">7d</button>
+        <button data-range="30">30d</button>
+        <button data-range="90">90d</button>
+        <button data-range="180">180d</button>
+        <button data-range="360">360d</button>
+        <button data-range="all" class="active">All</button>
+    </div>
+    <div class="toggle-group" id="scaleButtons">
+        <button data-scale="linear" class="active">Linear</button>
+        <button data-scale="log">Log</button>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="card">
+        <h2>Cumulative Performance vs Benchmark</h2>
+        <div id="cumChart" class="plot"></div>
+    </div>
+
+    <div class="card">
+        <h2>Daily Returns</h2>
+        <div id="dailyChart" class="plot"></div>
+    </div>
+
+    <div class="card">
+        <h2>Daily Out/Under-Performance</h2>
+        <div id="spreadDailyChart" class="plot"></div>
+    </div>
+
+    <div class="card">
+        <h2>Cumulative Out/Under-Performance</h2>
+        <div id="spreadChart" class="plot"></div>
+    </div>
+
+    <div class="card">
+        <h2>Holdings Over Time (Weights)</h2>
+        <div id="weightsChart" class="plot"></div>
+    </div>
+</div>
+
+<script>
+    const payload = %%payload_json%%;
+
+    function arrX(points) {
+        return points.map(p => p.t);
+    }
+
+    function arrY(points) {
+        return points.map(p => p.v);
+    }
+
+    function dateMinusDays(d, n) {
+        const dt = new Date(d);
+        dt.setDate(dt.getDate() - n);
+        return dt;
+    }
+
+    function lastDate() {
+        const pools = [];
+        if (payload.portfolio.equity.length) pools.push(payload.portfolio.equity);
+        if (payload.benchmark.equity.length) pools.push(payload.benchmark.equity);
+        if (!pools.length) return null;
+        return pools[0][pools[0].length - 1].t;
+    }
+
+    // === Charts ===
+    const cumTraces = [
+        {
+            name: "Portfolio",
+            type: "scatter",
+            mode: "lines",
+            x: arrX(payload.portfolio.equity),
+            y: arrY(payload.portfolio.equity)
+        },
+        {
+            name: "Benchmark",
+            type: "scatter",
+            mode: "lines",
+            x: arrX(payload.benchmark.equity),
+            y: arrY(payload.benchmark.equity)
+        }
+    ];
+    Plotly.newPlot("cumChart", cumTraces, {
+        paper_bgcolor: "#161a22",
+        plot_bgcolor: "#161a22",
+        font: {color: "#e8eaed"},
+        xaxis: {rangeslider: {visible: true}},
+        yaxis: {tickformat: ",.2f"},
+        legend: {orientation: "h"}
+    }, {displayModeBar: false});
+
+    const dailyTraces = [
+        {name: "Portfolio", type: "bar", x: arrX(payload.portfolio.daily), y: arrY(payload.portfolio.daily)},
+        {name: "Benchmark", type: "bar", x: arrX(payload.benchmark.daily), y: arrY(payload.benchmark.daily)}
+    ];
+    Plotly.newPlot("dailyChart", dailyTraces, {
+        paper_bgcolor: "#161a22", plot_bgcolor: "#161a22",
+        font: {color: "#e8eaed"}, barmode: "group", yaxis: {tickformat: "+.2%"},
+        xaxis: {rangeslider: {visible: true}}, legend: {orientation: "h"}
+    }, {displayModeBar: false});
+
+    // New: daily out/under-performance
+    const spreadDailyTrace = {
+        name: "Portfolio − Benchmark", type: "bar", x: arrX(payload.spread.daily),
+        y: arrY(payload.spread.daily),
+        marker: {color: payload.spread.daily.map(p => p.v >= 0 ? "#3ac569" : "#e74c3c")}
+    };
+    Plotly.newPlot("spreadDailyChart", [spreadDailyTrace], {
+        paper_bgcolor: "#161a22", plot_bgcolor: "#161a22",
+        font: {color: "#e8eaed"}, yaxis: {tickformat: "+.2%", title: "Excess Return"},
+        xaxis: {rangeslider: {visible: true}}
+    }, {displayModeBar: false});
+
+    const spreadTrace = {
+        name: "Cumulative Alpha", type: "scatter", mode: "lines",
+        x: arrX(payload.spread.cumulative), y: arrY(payload.spread.cumulative)
+    };
+    Plotly.newPlot("spreadChart", [spreadTrace], {
+        paper_bgcolor: "#161a22", plot_bgcolor: "#161a22",
+        font: {color: "#e8eaed"}, xaxis: {rangeslider: {visible: true}}, yaxis: {tickformat: "+.2%"}
+    }, {displayModeBar: false});
+
+    const weightTraces = payload.weights.map(s => ({
+        name: s.name, type: "scatter", mode: "lines", stackgroup: "one",
+        x: arrX(s.points), y: arrY(s.points)
+    }));
+    Plotly.newPlot("weightsChart", weightTraces, {
+        paper_bgcolor: "#161a22",
+        plot_bgcolor: "#161a22",
+        font: {color: "#e8eaed"},
+        xaxis: {rangeslider: {visible: true}},
+        yaxis: {tickformat: ".0%", rangemode: "tozero"},
+        legend: {orientation: "h"}
+    }, {displayModeBar: false});
+
+    // Range buttons
+    const ids = ["cumChart", "dailyChart", "spreadDailyChart", "spreadChart", "weightsChart"];
+    const buttons = document.querySelectorAll("#rangeButtons button");
+    const end = lastDate();
+
+    function setRange(days) {
+        if (days === "all" || !end) {
+            ids.forEach(id => Plotly.relayout(id, {"xaxis.autorange": true}));
+        } else {
+            const endDate = new Date(end);
+            const startDate = dateMinusDays(endDate, parseInt(days, 10));
+            ids.forEach(id => Plotly.relayout(id, {"xaxis.range": [startDate, endDate]}));
+        }
+        buttons.forEach(b => b.classList.toggle("active", b.dataset.range === String(days)));
+    }
+
+    buttons.forEach(b => b.addEventListener("click", () => setRange(b.dataset.range)));
+
+    // Scale toggle
+    const scaleButtons = document.querySelectorAll("#scaleButtons button");
+
+    function setScale(scale) {
+        Plotly.relayout("cumChart", {"yaxis.type": scale});
+        scaleButtons.forEach(b => b.classList.toggle("active", b.dataset.scale === scale));
+    }
+
+    scaleButtons.forEach(b => b.addEventListener("click", () => setScale(b.dataset.scale)));
+</script>
+</body>
+</html>
