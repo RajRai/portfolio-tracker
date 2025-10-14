@@ -165,19 +165,30 @@ def get_polygon_prices(symbols, start, end, api_key=None):
             f"?adjusted=false&sort=desc&limit=1&apiKey={api_key}"
         )
         r_intra = requests.get(intraday_url)
+        last_price = 0
+
         if r_intra.status_code == 200:
             results = r_intra.json().get("results")
             if results:
-                last_time = datetime.fromtimestamp(results[0]["t"] / 1000)
                 last_price = results[0]["c"]
-                df.loc[last_time] = last_price
+
+                # Normalize to a tz-naive date for the current trading day
+                today_dt = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+
+                # Overwrite existing same-day row or insert one at midnight
+                idx_naive = df.index.tz_localize(None)
+                if (idx_naive.normalize() == today_dt).any():
+                    df.loc[idx_naive.normalize() == today_dt] = last_price
+                else:
+                    df.loc[today_dt] = last_price
+
                 updated_live = "YES"
 
         # --- Record results ---
         all_prices[sym] = df
         start_s = df.index.min().strftime("%Y-%m-%d") if not df.empty else "-"
         end_s = df.index.max().strftime("%Y-%m-%d") if not df.empty else "-"
-        summary_rows.append([sym, cache_status, start_s, end_s, len(df), updated_live])
+        summary_rows.append([sym, cache_status, start_s, end_s, len(df), updated_live, last_price])
 
         # --- Clean old cache & rename current ---
         old_files = list(CACHE_DIR.glob(f"{sym}_{start}_*.json"))
@@ -207,7 +218,7 @@ def get_polygon_prices(symbols, start, end, api_key=None):
 
     _print_table(
         summary_rows,
-        headers=["Symbol", "Cache", "Start", "End", "Rows", "Live"]
+        headers=["Symbol", "Cache", "Start", "End", "Rows", "Live", "Live Price"]
     )
 
     return prices
