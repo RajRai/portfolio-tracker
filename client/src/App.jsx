@@ -31,8 +31,24 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
     useEffect(() => {
         fetch("/api/accounts")
             .then((r) => r.json())
-            .then((data) => {
-                setAccounts(data);
+            .then(async (data) => {
+                const enriched = await Promise.all(
+                    data.map(async (acc) => {
+                        try {
+                            const url = acc.report?.replace(".html", "_interactive.json");
+                            const j = url ? await (await fetch(url)).json() : null;
+                            const daily = j?.portfolio?.daily;
+                            const last =
+                                Array.isArray(daily) && daily.length
+                                    ? daily[daily.length - 1].v
+                                    : null;
+                            return { ...acc, dailyReturn: last };
+                        } catch {
+                            return { ...acc, dailyReturn: null };
+                        }
+                    })
+                );
+                setAccounts(enriched);
                 setLoading(false);
             })
             .catch(() => setLoading(false));
@@ -66,7 +82,7 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
                         allowScrollButtonsMobile
                         sx={{
                             minHeight: 36,
-                            flex: 1, // allow tabs to shrink gracefully
+                            flex: 1,
                             "& .MuiTab-root": {
                                 textTransform: "none",
                                 minWidth: 120,
@@ -79,9 +95,58 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
                             "& .MuiTabs-indicator": { height: 2 },
                         }}
                     >
-                        {accounts.map((acc) => (
-                            <Tab key={acc.id} label={acc.name} />
-                        ))}
+                        {accounts.map((acc) => {
+                            const val = acc.dailyReturn;
+                            const color =
+                                val == null
+                                    ? theme.palette.text.secondary
+                                    : val > 0
+                                        ? theme.palette.success.light
+                                        : val < 0
+                                            ? theme.palette.error.light
+                                            : theme.palette.text.secondary;
+                            const text =
+                                val == null
+                                    ? ""
+                                    : `${val > 0 ? "+" : ""}${(val * 100).toFixed(2)}%`;
+
+                            return (
+                                <Tab
+                                    key={acc.id}
+                                    label={
+                                        <Box
+                                            sx={{
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                alignItems: "center",
+                                                lineHeight: 1.1,
+                                            }}
+                                        >
+                                            <Typography
+                                                sx={{
+                                                    fontSize: "0.8rem",
+                                                    fontWeight: 500,
+                                                    color: "inherit",
+                                                }}
+                                            >
+                                                {acc.name}
+                                            </Typography>
+                                            {text && (
+                                                <Typography
+                                                    sx={{
+                                                        fontSize: "0.7rem",
+                                                        color,
+                                                        mt: 0.2,
+                                                    }}
+                                                >
+                                                    {text}
+                                                </Typography>
+                                            )}
+                                        </Box>
+                                    }
+                                />
+                            );
+                        })}
                     </Tabs>
 
                     {/* ===== Desktop controls ===== */}
@@ -166,7 +231,13 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
             </AppBar>
 
             {/* ======= Main Account View ======= */}
-            <Box sx={{ flex: 1, overflow: "auto", bgcolor: theme.palette.background.default }}>
+            <Box
+                sx={{
+                    flex: 1,
+                    overflow: "auto",
+                    bgcolor: theme.palette.background.default,
+                }}
+            >
                 <AccountTabs account={accounts[active]} />
             </Box>
 

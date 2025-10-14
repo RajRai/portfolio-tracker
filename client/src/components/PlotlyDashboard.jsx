@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, memo } from "react";
 import {
     Button,
     CircularProgress,
     Typography,
     Stack,
     Divider,
+    Box,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
@@ -18,6 +19,106 @@ async function getPlotly() {
     }
     return PlotlyModule;
 }
+
+// ✅ Memoized performance table with scoped styles (beats MUI overrides)
+const PerformanceTable = memo(({ tableData, theme }) => (
+    <Box
+        className="performance-table"
+        sx={{
+            overflowX: "auto",
+            mb: 3,
+            borderRadius: 1.5,
+            boxShadow: "0px 1px 3px rgba(0,0,0,0.15)",
+            bgcolor: theme.palette.background.paper,
+            position: "relative",
+            display: "inline-block",
+            width: "100%",
+            marginBottom: 0
+        }}
+    >
+        <style>{`
+      .performance-table table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: center;
+        min-width: 480px;
+        border-radius: 8px;
+        overflow: hidden; /* 👈 key line */
+        background: ${theme.palette.background.paper};
+      }
+      .performance-table thead tr {
+        background: ${theme.palette.action.hover};
+      }
+      .performance-table th, .performance-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid ${theme.palette.divider};
+        color: inherit !important;
+        transition: color 0.25s ease;
+      }
+      /* remove last-row divider and ghost gap */
+      .performance-table tbody tr:last-child td {
+        border-bottom: none;
+      }
+      .performance-table td.gain {
+        color: ${theme.palette.success.light} !important;
+      }
+      .performance-table td.loss {
+        color: ${theme.palette.error.light} !important;
+      }
+      .performance-table td.excess-pos {
+        color: ${theme.palette.success.main} !important;
+        font-weight: 600;
+      }
+      .performance-table td.excess-neg {
+        color: ${theme.palette.error.main} !important;
+        font-weight: 600;
+      }
+      .performance-table td.excess-flat {
+        color: ${theme.palette.text.primary} !important;
+        font-weight: 600;
+      }
+    `}</style>
+
+        <table style={{marginBottom: 0}}>
+            <thead>
+            <tr>
+                <th>Period</th>
+                <th>Portfolio</th>
+                <th>Benchmark</th>
+                <th>Excess</th>
+            </tr>
+            </thead>
+            <tbody>
+            {tableData.map(({ label, p, b, diff }) => (
+                <tr key={label}>
+                    <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{label}</td>
+                    <td className={p == null ? "" : p > 0 ? "gain" : "loss"}>
+                        {p != null ? (p * 100).toFixed(1) + "%" : "—"}
+                    </td>
+                    <td className={b == null ? "" : b > 0 ? "gain" : "loss"}>
+                        {b != null ? (b * 100).toFixed(1) + "%" : "—"}
+                    </td>
+                    <td
+                        className={
+                            diff == null
+                                ? ""
+                                : diff > 0
+                                    ? "excess-pos"
+                                    : diff < 0
+                                        ? "excess-neg"
+                                        : "excess-flat"
+                        }
+                    >
+                        {diff != null
+                            ? (diff > 0 ? "+" : "") + (diff * 100).toFixed(1) + "%"
+                            : "—"}
+                    </td>
+                </tr>
+            ))}
+            </tbody>
+        </table>
+    </Box>
+));
 
 export default function PlotlyDashboard({ account }) {
     const theme = useTheme();
@@ -37,11 +138,10 @@ export default function PlotlyDashboard({ account }) {
     // 🚀 Lazy-load Plotly once
     useEffect(() => {
         let cancelled = false;
-        async function loadAll() {
+        (async () => {
             const [plotlyLib] = await Promise.all([getPlotly()]);
             if (!cancelled) setPlotly(plotlyLib);
-        }
-        loadAll();
+        })();
         return () => {
             cancelled = true;
         };
@@ -114,7 +214,7 @@ export default function PlotlyDashboard({ account }) {
             );
         };
 
-        // Cumulative
+        // --- Cumulative Performance (percent-based)
         makePlot(
             charts.cum,
             [
@@ -123,20 +223,20 @@ export default function PlotlyDashboard({ account }) {
                     type: "scatter",
                     mode: "lines",
                     x: arrX(payload.portfolio.equity),
-                    y: arrY(payload.portfolio.equity).map(v => v - 1), // convert 1.0→0%
+                    y: arrY(payload.portfolio.equity).map((v) => v - 1),
                 },
                 {
                     name: "Benchmark",
                     type: "scatter",
                     mode: "lines",
                     x: arrX(payload.benchmark.equity),
-                    y: arrY(payload.benchmark.equity).map(v => v - 1),
+                    y: arrY(payload.benchmark.equity).map((v) => v - 1),
                 },
             ],
             { yaxis: { tickformat: "+.1%" } }
         );
 
-        // Daily Returns
+        // --- Daily Returns
         makePlot(
             charts.daily,
             [
@@ -156,7 +256,7 @@ export default function PlotlyDashboard({ account }) {
             { barmode: "group", yaxis: { tickformat: "+.2%" } }
         );
 
-        // Daily Spread
+        // --- Daily Spread
         makePlot(
             charts.spreadDaily,
             [
@@ -175,7 +275,7 @@ export default function PlotlyDashboard({ account }) {
             { yaxis: { tickformat: "+.2%", title: "Excess Return" } }
         );
 
-        // Cumulative Spread
+        // --- Cumulative Spread
         makePlot(
             charts.spreadCum,
             [
@@ -190,14 +290,12 @@ export default function PlotlyDashboard({ account }) {
             { yaxis: { tickformat: "+.2%" } }
         );
 
-// 🟢 Holdings Over Time — dual-layer, no dates, clean hovers
+        // --- Holdings Over Time
         const traces = [];
-
         for (const s of payload.weights) {
             const x = s.points.map((p) => p.t);
             const y = s.points.map((p) => p.v);
 
-            // 1️⃣ Base stacked layer for visuals
             traces.push({
                 name: s.name,
                 type: "scatter",
@@ -206,14 +304,13 @@ export default function PlotlyDashboard({ account }) {
                 line: { width: 1 },
                 x,
                 y,
-                hoverinfo: "skip", // no hover on fill layer
+                hoverinfo: "skip",
             });
 
-            // 2️⃣ Hover-only overlay (filtered, invisible)
             const xf = [];
             const yf = [];
             for (let i = 0; i < y.length; i++) {
-                if (Math.abs(y[i]) >= 0.01) { // show only ≥1%
+                if (Math.abs(y[i]) >= 0.01) {
                     xf.push(x[i]);
                     yf.push(y[i]);
                 }
@@ -225,7 +322,7 @@ export default function PlotlyDashboard({ account }) {
                 mode: "markers",
                 x: xf,
                 y: yf,
-                marker: { size: 6, opacity: 0 }, // invisible hitbox
+                marker: { size: 6, opacity: 0 },
                 line: { width: 0 },
                 hovertemplate: "%{y:.1%}<extra>%{fullData.name}</extra>",
                 connectgaps: false,
@@ -264,6 +361,119 @@ export default function PlotlyDashboard({ account }) {
     if (!account?.report) return null;
     if (!Plotly || !data) return <CircularProgress sx={{ mt: 4 }} />;
 
+    // --- 📈 Robust performance comparison helpers ---
+    const ms = (d) => (d instanceof Date ? d.getTime() : new Date(d).getTime());
+
+    // Find index at-or-before a cutoff date
+    const idxAtOrBefore = (series, cutoffMs) => {
+        let lo = 0, hi = series.length - 1, ans = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (ms(series[mid].t) <= cutoffMs) {
+                ans = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return ans; // -1 means no point on/before
+    };
+
+    // First index on-or-after a date
+    const idxOnOrAfter = (series, targetMs) => {
+        let lo = 0, hi = series.length - 1, ans = series.length;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (ms(series[mid].t) >= targetMs) {
+                ans = mid;
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        return ans === series.length ? -1 : ans;
+    };
+
+    // Period return using equity series (calendar days), from value at-or-before cutoff to last
+    const periodReturn = (series, calendarDays) => {
+        if (!series?.length) return null;
+        const endIdx = series.length - 1;
+        const endMs = ms(series[endIdx].t);
+        const cutoff = new Date(endMs);
+        cutoff.setDate(cutoff.getDate() - calendarDays);
+        const startIdx = idxAtOrBefore(series, cutoff.getTime());
+        if (startIdx < 0) return null;
+        const start = series[startIdx].v;
+        const end = series[endIdx].v;
+        if (start === 0 || start == null || end == null) return null;
+        return end / start - 1;
+    };
+
+    // YTD return from Jan 1 of last equity year (first trading day of that year)
+    const ytdReturn = (series) => {
+        if (!series?.length) return null;
+        const endIdx = series.length - 1;
+        const endDate = new Date(series[endIdx].t);
+        const jan1 = new Date(endDate.getFullYear(), 0, 1);
+        const startIdx = idxOnOrAfter(series, jan1.getTime());
+        if (startIdx < 0) return null;
+        const start = series[startIdx].v;
+        const end = series[endIdx].v;
+        if (start === 0 || start == null || end == null) return null;
+        return end / start - 1;
+    };
+
+    // 1D return: prefer last daily return, else fall back to equity one-day ratio
+    const oneDayReturn = (dailySeries, equitySeries) => {
+        if (dailySeries?.length) {
+            const last = dailySeries[dailySeries.length - 1].v;
+            if (typeof last === "number") return last;
+        }
+        return periodReturn(equitySeries, 1);
+    };
+
+    // Build timeframes respecting available history
+    const eq = data.portfolio.equity || [];
+    const availableDays = (() => {
+        if (eq.length < 2) return 0;
+        const start = new Date(eq[0].t);
+        const end = new Date(eq[eq.length - 1].t);
+        return Math.floor((end - start) / (1000 * 60 * 60 * 24));
+    })();
+
+    const rawTimeframes = [
+        ["1D", "1D"],
+        ["7D", 7],
+        ["30D", 30],
+        ["3M", 90],
+        ["6M", 180],
+        ["YTD", "YTD"],
+        ["1Y", 365],
+        ["3Y", 365 * 3],
+        ["5Y", 365 * 5],
+        ["10Y", 365 * 10],
+    ];
+
+    // Compute table data
+    const tableData = rawTimeframes.map(([label, span]) => {
+        let p = null, b = null;
+        if (label === "1D") {
+            p = oneDayReturn(data.portfolio.daily, data.portfolio.equity);
+            b = oneDayReturn(data.benchmark.daily, data.benchmark.equity);
+        } else if (label === "YTD") {
+            p = ytdReturn(data.portfolio.equity);
+            b = ytdReturn(data.benchmark.equity);
+        } else if (typeof span === "number") {
+            // Only compute if we plausibly have that much history
+            if (availableDays >= Math.min(span, availableDays)) {
+                p = periodReturn(data.portfolio.equity, span);
+                b = periodReturn(data.benchmark.equity, span);
+            }
+        }
+        const diff = p != null && b != null ? p - b : null;
+        return { label, p, b, diff };
+    }).filter(row => row.p != null || row.b != null || row.diff != null); // drop completely unavailable rows
+
     const renderSection = (title, ref) => (
         <div style={{ marginBottom: 48 }}>
             <Typography variant="h6" sx={{ mb: 1.5, fontWeight: 500 }}>
@@ -275,14 +485,29 @@ export default function PlotlyDashboard({ account }) {
     );
 
     return (
-        <div style={{ width: "100%" }}>
+        <Box
+            sx={{
+                width: "100%",
+                px: { xs: 1.5, sm: 3 },
+                pt: { xs: 2, sm: 3 },
+                pb: 6,
+            }}
+        >
+            {/* subtle top divider to separate from header */}
+            <Divider sx={{ mb: 3, opacity: 0.4 }} />
+
+            {/* 📊 Performance Comparison Table */}
+            <Box sx={{ mb: 4 }}>
+                <PerformanceTable tableData={tableData} theme={theme} />
+            </Box>
+
             {/* 🔹 Range Buttons */}
             <Stack
                 direction="row"
                 spacing={1.5}
                 useFlexGap
                 flexWrap="wrap"
-                sx={{ mb: 3, mt: 1 }}
+                sx={{ mb: 4 }}
             >
                 {["1m", "3m", "6m", "1y", "all"].map((r) => (
                     <Button
@@ -304,9 +529,9 @@ export default function PlotlyDashboard({ account }) {
             {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
             {renderSection("Holdings Over Time (Weights)", charts.weights)}
 
-            <div style={{ marginTop: 64 }}>
+            <Box sx={{ mt: 8 }}>
                 <ReportFrame src={account.report} />
-            </div>
-        </div>
+            </Box>
+        </Box>
     );
 }
