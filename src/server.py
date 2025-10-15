@@ -1,15 +1,16 @@
-import os
 import json
-from pathlib import Path
-from flask import Flask, send_from_directory, jsonify
+import os
+
 from dotenv import load_dotenv
+from flask import Flask, send_from_directory, jsonify
+
+from src.util import BASE_DIR
 
 load_dotenv()
 
 # ============================================================
 #  Setup
 # ============================================================
-BASE_DIR = Path(__file__).parent.resolve()
 OUT_DIR = BASE_DIR / "out"
 CLIENT_DIR = BASE_DIR / "client" / "dist"
 

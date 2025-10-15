@@ -17,14 +17,15 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend + built client
-COPY . .
-COPY --from=client-build /app/client/dist ./client/dist
+WORKDIR /app/src
+COPY src/ .
+COPY --from=client-build /app/client/dist ../client/dist
+ENV PYTHONPATH=/app
 
 ENV PYTHONUNBUFFERED=1
 ENV FLASK_ENV=production

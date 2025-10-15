@@ -3,6 +3,8 @@ import signal
 import sys
 import time
 
+from util import BASE_DIR
+
 processes = []
 
 def shutdown(signum, frame):
@@ -22,12 +24,12 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     cmds = [
-        ["python", "watch.py"],
-        ["python", "server.py"]
+        ["python", BASE_DIR / "src" / "reports" / "watch.py"],
+        ["python", BASE_DIR / "src" / "server.py"]
     ]
 
     for cmd in cmds:
-        print(f"▶️ Starting {' '.join(cmd)}")
+        print(f"▶️ Starting {' '.join(list(map(str, cmd)))}")
         p = subprocess.Popen(cmd)
         processes.append(p)
 

@@ -13,7 +13,8 @@ import quantstats as qs
 import pandas as pd
 import numpy as np
 
-from src.cache_polygon import get_polygon_prices
+from src.reports.polygon import get_polygon_prices
+from src.util import BASE_DIR
 
 qs.extend_pandas()
 
@@ -43,7 +44,7 @@ def add_missing_zeros(returns: pd.Series) -> pd.Series:
     return pd.Series(out_vals, index=full_range, name="Date")
 
 
-ACCOUNTS_FILE = Path("data/accounts.json")  # or just Path("accounts.json")
+ACCOUNTS_FILE = BASE_DIR / "data" / "accounts.json"  # or just Path("accounts.json")
 
 def load_accounts():
     if not ACCOUNTS_FILE.exists():
@@ -72,7 +73,7 @@ def main():
         raise RuntimeError("Missing POLYGON_API_KEY in .env")
 
     # --- Use merged CSVs instead of raw Fidelity exports ---
-    BASE = Path("data")
+    BASE = BASE_DIR / "data"
     accounts = load_accounts()
 
     # You can override with command-line arguments like:
@@ -201,7 +202,7 @@ def main():
         #  5. QuantStats report generation
         # ============================================================
 
-        out_dir = Path("out")
+        out_dir = BASE_DIR / "out"
         out_dir.mkdir(exist_ok=True)
         out_path = out_dir / f"report_{i}.html"
 

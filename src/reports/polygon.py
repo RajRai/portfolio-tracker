@@ -7,13 +7,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pytz
 
+from src.util import BASE_DIR
+
 # ============================================================
 #  Environment + cache setup
 # ============================================================
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
-CACHE_DIR = BASE_DIR / ".." / "data" / ".cache" / "polygon"
+CACHE_DIR = BASE_DIR / "data" / ".cache" / "polygon"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ============================================================

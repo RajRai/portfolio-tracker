@@ -1,11 +1,13 @@
+import subprocess
 import sys
 import time
-import os
-import pandas as pd
 from pathlib import Path
-import subprocess
 
-BASE = Path("data")
+import pandas as pd
+
+from src.util import BASE_DIR
+
+BASE = BASE_DIR / "data"
 
 def merge_statements(account_dir: Path):
     statements_dir = account_dir / "statements"
@@ -40,7 +42,7 @@ def merge_statements(account_dir: Path):
 
 def regenerate_reports():
     print("▶ rebuilding all reports...")
-    subprocess.run([sys.executable, "analyze_fidelity.py"], check=False)
+    subprocess.run([sys.executable, BASE_DIR / "src" / "reports" / "analyze_fidelity.py"], check=False)
     print("✅ Reports updated")
 
 def watch(scan_interval=5, rebuild_interval=600):
