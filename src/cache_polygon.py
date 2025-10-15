@@ -2,9 +2,10 @@ import os
 import json
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from dotenv import load_dotenv
+import pytz
 
 # ============================================================
 #  Environment + cache setup
@@ -15,60 +16,63 @@ BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / ".." / "data" / ".cache" / "polygon"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ============================================================
+#  Timezone helpers
+# ============================================================
+ET = pytz.timezone("America/New_York")
 
-# ------------------------------------------------------------
-#  Helpers
-# ------------------------------------------------------------
+def _now_et() -> pd.Timestamp:
+    """Return current ET timestamp (override via POLYGON_MOCK_NOW)."""
+    mock_env = os.getenv("POLYGON_MOCK_NOW")
+    if mock_env:
+        ts = pd.Timestamp(mock_env)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("America/New_York")
+        else:
+            ts = ts.tz_convert("America/New_York")
+        return ts
+    return pd.Timestamp.now(tz=ET)
+
+def _et_date(ts_ms: int) -> pd.Timestamp:
+    """Convert Polygon ms timestamp (UTC) to ET calendar date (midnight)."""
+    return (
+        pd.to_datetime(ts_ms, unit="ms", utc=True)
+        .tz_convert(ET)
+        .normalize()
+    )
+
+# ============================================================
+#  Cache helpers
+# ============================================================
 def _cache_path(sym: str, start: str, end: str) -> Path:
-    """Return cache path for a symbol/start/end tuple."""
     return CACHE_DIR / f"{sym}_{start}_{end}.json"
 
-
 def _find_latest_cache(sym: str, start: str) -> Path | None:
-    """Return the most recent cache file for a symbol."""
     matches = sorted(CACHE_DIR.glob(f"{sym}_{start}_*.json"))
     return matches[-1] if matches else None
 
-
-def _load_cache(sym: str, start: str, end: str):
-    """Load cache contents and detect freshness."""
-    p = _cache_path(sym, start, end)
-    if not p.exists():
-        return None, "MISS", None
+def _load_cache_by_path(p: Path):
+    if not p or not p.exists():
+        return None, "MISS"
     try:
         data = json.load(open(p))
+        return data, "HIT"
     except Exception:
-        return None, "ERR", None
-
-    results = data.get("results", [])
-    if not results:
-        return data, "EMPTY", None
-
-    last_ts = max(r["t"] for r in results)
-    last_dt = pd.Timestamp(last_ts, unit="ms", tz="America/New_York").normalize()
-    today_dt = pd.Timestamp.now(tz="America/New_York").normalize()
-    if last_dt < today_dt:
-        return data, "STALE", None
-    return data, "HIT", None
-
+        return None, "ERR"
 
 def _save_cache(sym: str, start: str, end: str, data):
-    """Write cache safely."""
     try:
         json.dump(data, open(_cache_path(sym, start, end), "w"))
     except Exception:
         pass
 
-
 def _print_table(rows, headers):
-    """Pretty-print summary."""
     try:
         from tabulate import tabulate
         print("\n" + tabulate(rows, headers=headers, tablefmt="github", stralign="left", numalign="right"))
         return
     except Exception:
         pass
-    # fallback
     cols = list(zip(*([headers] + rows)))
     widths = [max(len(str(x)) for x in col) for col in cols]
     def fmt_row(r): return " | ".join(str(v).ljust(w) for v, w in zip(r, widths))
@@ -79,55 +83,53 @@ def _print_table(rows, headers):
     for r in rows:
         print(fmt_row(r))
 
-
 # ============================================================
 #  Main fetcher
 # ============================================================
 def get_polygon_prices(symbols, start, end, api_key=None):
-    """Fetch daily Polygon prices with per-symbol JSON cache."""
+    """
+    Fetch daily Polygon prices with per-symbol JSON cache (ET-normalized).
+    - Historical daily bars are cached up to the LAST COMPLETED ET TRADING DAY.
+    - Intraday (today) is appended IN-MEMORY ONLY for pre-market, regular, and after-hours.
+    - If cache is behind, fetch ONLY the missing tail days.
+    """
     if api_key is None:
         api_key = os.getenv("POLYGON_API_KEY")
     if not api_key:
         raise RuntimeError("Missing POLYGON_API_KEY in environment or .env")
 
     all_prices = {}
-    today = pd.Timestamp.now(tz="America/New_York").normalize()
+    today_et = _now_et().normalize()
     summary_rows = []
 
     for sym in symbols:
-        # --- Load latest available cache file ---
-        latest_cache = _find_latest_cache(sym, start)
-        if latest_cache:
-            _, _, cached_end = latest_cache.stem.split("_")
-            cache_json, cache_status, _ = _load_cache(sym, start, cached_end)
-            end = cached_end  # adjust to actual end
-        else:
-            cache_json, cache_status, _ = _load_cache(sym, start, end)
-
+        # --- Load latest cache ---
+        latest_cache_path = _find_latest_cache(sym, start)
+        cache_json, cache_status = _load_cache_by_path(latest_cache_path)
         cached_results = cache_json.get("results", []) if cache_json else []
-        newest_cached = max((r["t"] for r in cached_results), default=None)
 
-        # --- Determine fetch range ---
+        last_et_day = _et_date(max(r["t"] for r in cached_results)) if cached_results else None
+
+        # --- Determine if tail fetch needed ---
         fetch_start = None
         if not cached_results:
             fetch_start = start
             cache_status = "MISS"
         else:
-            last_dt = pd.to_datetime(newest_cached, unit="ms", utc=True).tz_convert("America/New_York").normalize()
-            today_dt = pd.Timestamp.now(tz="America/New_York").normalize()
-            if last_dt >= today_dt:
-                fetch_start = None
-                cache_status = "HIT"
-            else:
-                fetch_start = last_dt.strftime("%Y-%m-%d")
+            next_needed_day = (last_et_day + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            if last_et_day < today_et:
+                fetch_start = next_needed_day
                 cache_status = "STALE"
+            else:
+                cache_status = "HIT"
 
-        # --- Fetch only if needed ---
+        # --- Fetch tail ---
         if fetch_start:
-            print(f"Fetching {sym} {fetch_start} → {today.strftime('%Y-%m-%d')}")
+            print(f"Fetching {sym} {fetch_start} → {_now_et():%Y-%m-%d}")
             url = (
                 f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/day/"
-                f"{fetch_start}/{today:%Y-%m-%d}?adjusted=false&sort=asc&limit=50000&apiKey={api_key}"
+                f"{fetch_start}/{_now_et():%Y-%m-%d}"
+                f"?adjusted=true&sort=asc&limit=50000&apiKey={api_key}"
             )
             r = requests.get(url)
             if r.status_code == 200:
@@ -137,84 +139,85 @@ def get_polygon_prices(symbols, start, end, api_key=None):
                     merged = cached_results + [x for x in new_data if x["t"] not in seen]
                     merged.sort(key=lambda x: x["t"])
                     cache_json = {"results": merged}
-                    _save_cache(sym, start, today.strftime("%Y-%m-%d"), cache_json)
+                    last_ts_new = max(rr["t"] for rr in merged)
+                    end_for_filename = _et_date(last_ts_new).strftime("%Y-%m-%d")
+                    _save_cache(sym, start, end_for_filename, cache_json)
                     cache_status = "UPDATED"
+                    # remove old cache files
+                    for f in CACHE_DIR.glob(f"{sym}_{start}_*.json"):
+                        if f.name != f"{sym}_{start}_{end_for_filename}.json":
+                            try: f.unlink()
+                            except Exception: pass
                 else:
                     cache_status = "NO_NEW"
             elif cache_json:
                 cache_status = "STALE(FALLBACK)"
             else:
-                summary_rows.append([sym, "FAIL", "-", "-", 0, "API_ERR"])
+                summary_rows.append([sym, "FAIL", "-", "-", 0, "API_ERR", 0.0])
                 continue
 
-        # --- Build DataFrame ---
+        # --- Build daily ET close series ---
         data = cache_json.get("results", []) if cache_json else []
         if not data:
-            summary_rows.append([sym, cache_status, "-", "-", 0, "NO_DATA"])
+            summary_rows.append([sym, cache_status, "-", "-", 0, "NO_DATA", 0.0])
             continue
 
         df = pd.DataFrame(data)
-        df["date"] = pd.to_datetime(df["t"], unit="ms")
-        df = df.set_index("date")["c"].sort_index()
+        df["date_et"] = df["t"].apply(_et_date)
+        s_close = df.set_index("date_et")["c"].sort_index()
 
-        # --- Intraday live update ---
+        # --- Intraday append (covers pre, regular, and after-hours) ---
         updated_live = "NO"
+        last_price = 0.0
+        now_et = _now_et()
+        # Determine session date target
+        if now_et.time() < time(9, 30):
+            # pre-market: use today_et but compare vs yesterday close
+            session_label = today_et
+            session_desc = "PRE"
+        elif now_et.time() > time(16, 0):
+            # after-hours: still today's ET trading day
+            session_label = today_et
+            session_desc = "AFTER"
+        else:
+            # regular hours
+            session_label = today_et
+            session_desc = "REG"
+
         intraday_url = (
             f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/"
-            f"{today:%Y-%m-%d}/{today:%Y-%m-%d}"
-            f"?adjusted=false&sort=desc&limit=1&apiKey={api_key}"
+            f"{today_et:%Y-%m-%d}/{today_et:%Y-%m-%d}"
+            f"?adjusted=true&sort=desc&limit=2000&apiKey={api_key}"
         )
         r_intra = requests.get(intraday_url)
-        last_price = 0
-
         if r_intra.status_code == 200:
             results = r_intra.json().get("results")
             if results:
-                last_price = results[0]["c"]
+                mins = pd.DataFrame(results)
+                mins["ts_et"] = pd.to_datetime(mins["t"], unit="ms", utc=True).dt.tz_convert(ET)
+                mins = mins[(mins["ts_et"] <= now_et)]
+                if not mins.empty:
+                    last_price = float(mins.iloc[0]["c"])
+                    s_close.loc[session_label] = last_price
+                    updated_live = session_desc
 
-                # Normalize to a tz-naive date for the current trading day
-                today_dt = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
-
-                # Overwrite existing same-day row or insert one at midnight
-                idx_naive = df.index.tz_localize(None)
-                if (idx_naive.normalize() == today_dt).any():
-                    df.loc[idx_naive.normalize() == today_dt] = last_price
-                else:
-                    df.loc[today_dt] = last_price
-
-                updated_live = "YES"
-
-        # --- Record results ---
-        all_prices[sym] = df
-        start_s = df.index.min().strftime("%Y-%m-%d") if not df.empty else "-"
-        end_s = df.index.max().strftime("%Y-%m-%d") if not df.empty else "-"
-        summary_rows.append([sym, cache_status, start_s, end_s, len(df), updated_live, last_price])
-
-        # --- Clean old cache & rename current ---
-        old_files = list(CACHE_DIR.glob(f"{sym}_{start}_*.json"))
-        today_str = today.strftime("%Y-%m-%d")
-        new_path = _cache_path(sym, start, today_str)
-        for f in old_files:
-            if f != new_path and f.exists():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-        if not new_path.exists() and (latest_cache := _find_latest_cache(sym, start)):
-            try:
-                latest_cache.rename(new_path)
-                print(f"Renamed cache → {new_path.name}")
-            except Exception as e:
-                print(f"⚠️ Rename failed for {sym}: {e}")
+        # --- Save results per symbol ---
+        all_prices[sym] = s_close
+        start_s = s_close.index.min().strftime("%Y-%m-%d") if not s_close.empty else "-"
+        end_s = s_close.index.max().strftime("%Y-%m-%d") if not s_close.empty else "-"
+        summary_rows.append([sym, cache_status, start_s, end_s, len(s_close), updated_live, last_price])
 
     # --- Combine ---
     prices = pd.DataFrame(all_prices).sort_index()
+
     if not prices.empty:
+        # Drop duplicate indices (keep the latest, usually the most recent intraday update)
+        if not prices.index.is_unique:
+            prices = prices[~prices.index.duplicated(keep="last")]
+
         prices.index = pd.to_datetime(prices.index).tz_localize(None)
-        latest_time = prices.index.max()
-        last_valid_row = prices.ffill().iloc[-1]
-        prices.loc[latest_time] = last_valid_row
-        prices = prices[~prices.index.duplicated(keep="last")].sort_index()
+        full_idx = pd.Index(sorted(set(prices.index)))
+        prices = prices.reindex(full_idx).ffill()
 
     _print_table(
         summary_rows,
