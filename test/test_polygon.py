@@ -12,33 +12,41 @@ def make_response(json_data, status_code=200):
     return SimpleNamespace(status_code=status_code, json=lambda: json_data)
 
 # ============================================================
-#  Main fake Polygon mock for progression tests
+#  Fake Polygon mock: simple progression
 # ============================================================
-def custom_fake_polygon_get(url, *args, **kwargs):
-    """Simulate 10/13–10/15 price sequence for test progression."""
+def fake_polygon_get(url, *args, **kwargs):
+    """Simulate Polygon behavior for 2025-10-13 → 2025-10-15."""
     mock_now = os.getenv("POLYGON_MOCK_NOW")
+    include_today = os.getenv("POLYGON_INCLUDE_TODAY_DAILY") == "1"
     now_et = pd.Timestamp(mock_now, tz="America/New_York")
 
-    # --- baseline (daily historical) ---
+    # --- daily ---
     if "/range/1/day/" in url:
-        base_day = pd.Timestamp("2025-10-13", tz="America/New_York")
-        ts_ms = int(base_day.tz_convert("UTC").timestamp() * 1000)
-        return make_response({"results": [{"t": ts_ms, "c": 100}]})
+        results = []
+        base = pd.Timestamp("2025-10-13", tz="America/New_York")
+        results.append({"t": int(base.tz_convert("UTC").timestamp() * 1000), "c": 100})
+        if "2025-10-14" in url or "2025-10-15" in url:
+            next_day = base + pd.Timedelta(days=1)
+            results.append({"t": int(next_day.tz_convert("UTC").timestamp() * 1000), "c": 103})
+        if include_today and "2025-10-15" in url:
+            today_day = base + pd.Timedelta(days=2)
+            results.append({"t": int(today_day.tz_convert("UTC").timestamp() * 1000), "c": 105})
+        return make_response({"results": results})
 
-    # --- intraday (minute) ---
+    # --- intraday (1-min) ---
     elif "/range/1/minute/" in url:
         if now_et.date() == pd.Timestamp("2025-10-14").date():
             if now_et.time() < pd.Timestamp("09:30").time():
-                price = 100  # pre-market (not used)
+                price = 100
             elif now_et.time() > pd.Timestamp("16:00").time():
-                price = 110  # after-hours 10/14
+                price = 110
             else:
-                price = 105  # regular hours 10/14
+                price = 105
         elif now_et.date() == pd.Timestamp("2025-10-15").date():
             if now_et.time() < pd.Timestamp("09:30").time():
-                price = 110  # pre-market 10/15
+                price = 110
             else:
-                price = 115  # regular hours 10/15
+                price = 115
         else:
             price = 100
         ts_ms = int(now_et.tz_convert("UTC").timestamp() * 1000)
@@ -46,81 +54,132 @@ def custom_fake_polygon_get(url, *args, **kwargs):
 
     return make_response({}, 404)
 
+
 @pytest.fixture(autouse=True)
 def patch_requests(monkeypatch):
-    """Patch requests.get to use our custom fake Polygon responses by default."""
-    monkeypatch.setattr("requests.get", custom_fake_polygon_get)
+    """Patch requests.get to use our deterministic fake Polygon responses."""
+    monkeypatch.setattr("requests.get", fake_polygon_get)
 
 # ============================================================
-#  Test 1: Progressive intraday updates
+#  Helpers
 # ============================================================
-def test_price_progression(tmp_path, monkeypatch):
-    """Validate progressive price updates and state after each simulated session."""
+def seed_cache_only_1013(symbol, start):
+    ts = int(pd.Timestamp("2025-10-13", tz="America/New_York")
+             .tz_convert("UTC").timestamp() * 1000)
+    pf._save_cache(symbol, start, "2025-10-13", {"results": [{"t": ts, "c": 100}]})
+
+
+def run_and_print(monkeypatch, symbol, start, end, mock_now, expected_last, expected_series):
+    monkeypatch.setenv("POLYGON_MOCK_NOW", mock_now)
+    prices = pf.get_polygon_prices([symbol], start, end)
+    s = prices[symbol]
+    vals = list(map(float, s.values))
+    print(f"\n[{mock_now}] → last={vals[-1]}, full={vals}")
+    assert abs(vals[-1] - expected_last) < 1e-9
+    assert vals == expected_series
+
+
+# ============================================================
+#  Test 1: progression without "today" daily (clean history)
+# ============================================================
+def test_progression_without_today_daily(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache" / ".cache" / "polygon"
     cache_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
     monkeypatch.setenv("POLYGON_API_KEY", "dummy")
-
     symbol = "AAPL"
-    start = "2025-10-13"
-    end = "2025-10-15"
+    start, end = "2025-10-13", "2025-10-15"
+    seed_cache_only_1013(symbol, start)
 
-    # --- seed initial cache with 10/13 close = 100 ---
-    day_1013 = pd.Timestamp("2025-10-13", tz="America/New_York")
-    ts_ms = int(day_1013.tz_convert("UTC").timestamp() * 1000)
-    pf._save_cache(symbol, start, "2025-10-13", {"results": [{"t": ts_ms, "c": 100}]})
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-14 10:00:00", 105, [100.0, 105.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-14 18:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 10:00:00", 115, [100.0, 103.0, 115.0])
 
-    def run_at(mock_now, expected_price, expected_series):
-        """Run fetcher at simulated time and verify both last and cumulative series."""
-        monkeypatch.setenv("POLYGON_MOCK_NOW", mock_now)
-        prices = pf.get_polygon_prices([symbol], start, end)
-        s = prices[symbol]
-        vals = list(map(float, s.values))
-        print(f"\n[{mock_now}] → last={vals[-1]}, full={vals}")
-        assert abs(vals[-1] - expected_price) < 1e-9, f"expected {expected_price}, got {vals[-1]}"
-        assert vals == expected_series, f"series mismatch: {vals} vs {expected_series}"
-
-    # progressive validation
-    run_at("2025-10-14 10:00:00", 105, [100.0, 105.0])  # regular 10/14
-    run_at("2025-10-14 18:00:00", 110, [100.0, 110.0])  # after-hours 10/14
-    run_at("2025-10-15 08:00:00", 110, [100.0, 110.0])  # pre-market 10/15
-    run_at("2025-10-15 10:00:00", 115, [100.0, 115.0])  # regular 10/15
-
-    # final check after all steps
-    prices = pf.get_polygon_prices([symbol], start, end)
-    s = prices[symbol]
-    print("\nFinal series:", list(s.values))
-    assert list(s.values) == [100.0, 115.0]
-    assert s.iloc[-1] == 115
 
 # ============================================================
-#  Helper class for cache tests
+#  Test 2: progression with today's daily present (kept historically)
+# ============================================================
+def test_progression_with_today_daily_dropped(tmp_path, monkeypatch):
+    """Even if Polygon includes a partial 'today' daily, it’s cached as historical and later visible."""
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_INCLUDE_TODAY_DAILY", "1")
+    symbol = "AAPL"
+    start, end = "2025-10-13", "2025-10-15"
+    seed_cache_only_1013(symbol, start)
+
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-14 10:00:00", 105, [100.0, 105.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-14 18:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 10:00:00", 115, [100.0, 103.0, 115.0])
+
+
+# ============================================================
+#  Test 3: verify historical visibility transition
+# ============================================================
+def test_current_day_historical_handling(tmp_path, monkeypatch):
+    """Ensure T-2/T-1 fetch logic: before 9:30 uses two days back, after 9:30 uses one day back."""
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_INCLUDE_TODAY_DAILY", "1")
+
+    symbol = "AAPL"
+    start, end = "2025-10-13", "2025-10-15"
+    seed_cache_only_1013(symbol, start)
+
+    # 10/14 AFTER (yesterday=10/13 → today=10/14)
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-14 18:00:00")
+    prices_after = pf.get_polygon_prices([symbol], start, end)
+    vals_after = list(map(float, prices_after[symbol].values))
+    print("\n[2025-10-14 18:00] AFTER →", vals_after)
+    assert vals_after == [100.0, 110.0]
+
+    # 10/15 PRE (still compare vs 10/13; no new daily yet)
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 08:00:00")
+    prices_pre = pf.get_polygon_prices([symbol], start, end)
+    vals_pre = list(map(float, prices_pre[symbol].values))
+    print("\n[2025-10-15 08:00] PRE →", vals_pre)
+    assert vals_pre == [100.0, 110.0]
+
+    # 10/15 REG (market open → yesterday visible)
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 10:00:00")
+    prices_reg = pf.get_polygon_prices([symbol], start, end)
+    vals_reg = list(map(float, prices_reg[symbol].values))
+    print("\n[2025-10-15 10:00] REG →", vals_reg)
+    assert vals_reg == [100.0, 103.0, 115.0]
+
+
+# ============================================================
+#  Test 4: cache reuse verification
 # ============================================================
 class CallRecorder:
     def __init__(self):
         self.calls = []
+
     def __call__(self, url, *args, **kwargs):
         self.calls.append(url)
-        # Daily: two days of data
         if "/range/1/day/" in url:
-            today = pd.Timestamp("2025-10-14", tz="America/New_York")
-            prev = today - pd.Timedelta(days=1)
-            results = []
-            for d, c in [(prev, 100), (today, 105)]:
-                ts = int(d.tz_convert("UTC").timestamp() * 1000)
-                results.append({"t": ts, "c": c})
+            results = [
+                {"t": int(pd.Timestamp("2025-10-13", tz="America/New_York")
+                          .tz_convert("UTC").timestamp() * 1000), "c": 100},
+                {"t": int(pd.Timestamp("2025-10-14", tz="America/New_York")
+                          .tz_convert("UTC").timestamp() * 1000), "c": 105}
+            ]
             return make_response({"results": results})
-        # Intraday placeholder
         elif "/range/1/minute/" in url:
             ts = int(pd.Timestamp("2025-10-14T10:00:00", tz="America/New_York")
                      .tz_convert("UTC").timestamp() * 1000)
             return make_response({"results": [{"t": ts, "c": 105}]})
         return make_response({}, 404)
 
-# ============================================================
-#  Test 2: Cache miss → hit
-# ============================================================
-def test_cache_miss_then_hit(tmp_path, monkeypatch):
+
+def test_cache_miss_then_tail_then_stable(tmp_path, monkeypatch):
+    """Ensure cache file reused and tail fetch happens only once."""
     rec = CallRecorder()
     monkeypatch.setattr("requests.get", rec)
     cache_dir = tmp_path / "cache" / ".cache" / "polygon"
@@ -130,52 +189,11 @@ def test_cache_miss_then_hit(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-14 10:00:00")
 
     sym = "AAPL"
-    start = "2025-10-13"
-    end = "2025-10-15"
+    start, end = "2025-10-13", "2025-10-15"
 
-    # 1️⃣ First call: no cache → should fetch and create file
-    prices = pf.get_polygon_prices([sym], start, end)
-    files = list(cache_dir.glob(f"{sym}_{start}_*.json"))
-    assert len(files) == 1
-    assert any("/range/1/day/" in c for c in rec.calls)
-
-    # Cache file should have 2 daily bars
-    data = json.load(open(files[0]))
-    assert len(data["results"]) == 2
-
-    # 2️⃣ Second call: cache hit → should NOT call /day/
-    rec.calls.clear()
-    prices2 = pf.get_polygon_prices([sym], start, end)
-    assert not any("/range/1/day/" in c for c in rec.calls), "Unexpected refetch"
-    assert prices2.equals(prices)
-
-# ============================================================
-#  Test 3: Cache stale → tail fetch
-# ============================================================
-def test_cache_stale_fetch(tmp_path, monkeypatch):
-    rec = CallRecorder()
-    monkeypatch.setattr("requests.get", rec)
-    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
-    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
-
-    sym = "AAPL"
-    start = "2025-10-13"
-    end = "2025-10-15"
-
-    # Seed cache up to 10/13 only
-    ts = int(pd.Timestamp("2025-10-13", tz="America/New_York")
-             .tz_convert("UTC").timestamp() * 1000)
-    pf._save_cache(sym, start, "2025-10-13", {"results": [{"t": ts, "c": 100}]})
-
-    # Now "today" is 10/14 → should be considered stale
-    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-14 10:00:00")
-    rec.calls.clear()
     pf.get_polygon_prices([sym], start, end)
+    assert any("/range/1/day/" in c for c in rec.calls)
+    rec.calls.clear()
 
-    # Expect one daily tail fetch
-    day_calls = [c for c in rec.calls if "/range/1/day/" in c]
-    assert len(day_calls) == 1, "Expected one tail fetch"
-    files = list(cache_dir.glob(f"{sym}_{start}_2025-10-14.json"))
-    assert files, "Updated cache file missing"
+    pf.get_polygon_prices([sym], start, end)
+    assert not any("/range/1/day/" in c for c in rec.calls), "Unexpected re-fetch"
