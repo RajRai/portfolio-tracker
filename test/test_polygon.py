@@ -93,7 +93,7 @@ def test_progression_without_today_daily(tmp_path, monkeypatch):
 
     run_and_print(monkeypatch, symbol, start, end, "2025-10-14 10:00:00", 105, [100.0, 105.0])
     run_and_print(monkeypatch, symbol, start, end, "2025-10-14 18:00:00", 110, [100.0, 110.0])
-    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 103.0, 110.0])
     run_and_print(monkeypatch, symbol, start, end, "2025-10-15 10:00:00", 115, [100.0, 103.0, 115.0])
 
 
@@ -113,7 +113,7 @@ def test_progression_with_today_daily_dropped(tmp_path, monkeypatch):
 
     run_and_print(monkeypatch, symbol, start, end, "2025-10-14 10:00:00", 105, [100.0, 105.0])
     run_and_print(monkeypatch, symbol, start, end, "2025-10-14 18:00:00", 110, [100.0, 110.0])
-    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 110.0])
+    run_and_print(monkeypatch, symbol, start, end, "2025-10-15 08:00:00", 110, [100.0, 103.0, 110.0])
     run_and_print(monkeypatch, symbol, start, end, "2025-10-15 10:00:00", 115, [100.0, 103.0, 115.0])
 
 
@@ -139,12 +139,12 @@ def test_current_day_historical_handling(tmp_path, monkeypatch):
     print("\n[2025-10-14 18:00] AFTER →", vals_after)
     assert vals_after == [100.0, 110.0]
 
-    # 10/15 PRE (still compare vs 10/13; no new daily yet)
+    # 10/15 PRE (compare vs 10/14 market hours close)
     monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 08:00:00")
     prices_pre = pf.get_polygon_prices([symbol], start, end)
     vals_pre = list(map(float, prices_pre[symbol].values))
     print("\n[2025-10-15 08:00] PRE →", vals_pre)
-    assert vals_pre == [100.0, 110.0]
+    assert vals_pre == [100.0, 103.0, 110.0]
 
     # 10/15 REG (market open → yesterday visible)
     monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 10:00:00")

@@ -50,7 +50,7 @@ def get_polygon_prices(symbols, start, end):
     today_str = now.strftime("%Y-%m-%d")
 
     # decide how many days back to include
-    cutoff_days = 2 if now.time() < time(9, 30) else 1
+    cutoff_days = 1
 
     all_prices = {}
 
