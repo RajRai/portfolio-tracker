@@ -3,7 +3,6 @@ import {
     Dialog, DialogTitle, DialogContent, DialogActions,
     Button, TextField, Box, Typography,
 } from "@mui/material";
-import { saveCustomTheme } from "../themes/themeManager.js";
 
 export default function CustomThemeDialog({ open, onClose, refresh }) {
     const [name, setName] = useState("");

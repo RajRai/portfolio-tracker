@@ -1,32 +1,24 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
-import { ThemeProvider, CssBaseline } from "@mui/material";
-import { loadThemes, loadLastTheme, saveLastTheme } from "./themes/themeManager.js";
+import {allPresets, ThemeManagerProvider} from "@rajrai/mui-theme-manager";
+import {THEMES} from "./themes.js";
 
 function Root() {
-    const [themeName, setThemeName] = React.useState(loadLastTheme());
-    const [themes, setThemes] = React.useState(loadThemes());
-
-    const theme = themes[themeName] || themes.slate;
-
-    const handleSetTheme = (name) => {
-        setThemeName(name);
-        saveLastTheme(name);
-    };
-
-    const refreshThemes = () => setThemes(loadThemes());
+    const presets = Object.keys(THEMES).map(key => {
+        const value = THEMES[key];
+        return {
+            id: key,
+            name: key.charAt(0).toUpperCase() + key.slice(1),
+            themeOptions: value,
+            isPreset: true
+        }
+    });
 
     return (
-        <ThemeProvider theme={theme}>
-            <CssBaseline />
-            <App
-                themeName={themeName}
-                setThemeName={handleSetTheme}
-                themes={themes}
-                refreshThemes={refreshThemes}
-            />
-        </ThemeProvider>
+        <ThemeManagerProvider presets={presets}>
+            <App />
+        </ThemeManagerProvider>
     );
 }
 

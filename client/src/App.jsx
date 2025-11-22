@@ -15,13 +15,16 @@ import {
     Tooltip,
 } from "@mui/material";
 import Menu from "@mui/material/Menu";
-import AddIcon from "@mui/icons-material/Add";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
-import CustomThemeDialog from "./components/CreateCustomTheme.jsx";
 import AccountTabs from "./components/AccountTabs.jsx";
+import {
+    ThemeSelector,
+    NewThemeButton, ThemeEditorModal, useThemeManager,
+} from "@rajrai/mui-theme-manager";
+import {deepClone} from "@mui/x-data-grid/internals";
 
-export default function App({ themeName, setThemeName, themes, refreshThemes }) {
+export default function App() {
     const [accounts, setAccounts] = useState([]);
     const [active, setActive] = useState(0);
     const [loading, setLoading] = useState(true);
@@ -60,8 +63,10 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", height: "100dvh" }}>
+            <ThemeEditorModal/>
+
             {/* ======= AppBar ======= */}
-            <AppBar position="static" color="primary">
+            <AppBar position="static" color="primary" style={{ borderRadius: 0 }}>
                 <Toolbar
                     variant="dense"
                     sx={{
@@ -69,6 +74,7 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
                         minHeight: 40,
                         px: 1.5,
                         overflow: "hidden",
+                        borderRadius: 0
                     }}
                 >
                     {/* ===== Account Tabs ===== */}
@@ -159,45 +165,25 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
                         }}
                     >
                         {/* Theme Picker */}
-                        <Select
-                            value={themeName}
-                            onChange={(e) => setThemeName(e.target.value)}
-                            size="small"
-                            variant="outlined"
-                            sx={{
-                                color: "white",
-                                fontSize: "0.8rem",
-                                height: 30,
-                                ".MuiSvgIcon-root": { color: "white" },
-                                bgcolor: "rgba(255,255,255,0.1)",
-                                "& fieldset": { border: "none" },
+                        <ThemeSelector
+                            selectProps={{
+                                size: "small",
+                                variant: "outlined",
+                                sx: {
+                                    fontSize: "0.8rem",
+                                    height: 30,
+                                    bgcolor: "rgba(255,255,255,0.1)",
+                                    "& fieldset": { border: "none" },
+                                }
                             }}
-                        >
-                            {Object.keys(themes).map((name) => (
-                                <MenuItem key={name} value={name}>
-                                    {name.charAt(0).toUpperCase() + name.slice(1)}
-                                </MenuItem>
-                            ))}
-                        </Select>
+                        />
 
                         {/* New Theme Button */}
-                        <Button
-                            color="inherit"
-                            variant="outlined"
-                            size="small"
-                            startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-                            onClick={() => setOpen(true)}
-                            sx={{
-                                borderColor: "rgba(255,255,255,0.4)",
-                                textTransform: "none",
-                                fontSize: "0.75rem",
-                                lineHeight: 1.2,
-                                py: 0.3,
-                                "&:hover": { borderColor: "white" },
+                        <NewThemeButton
+                            buttonProps={{
+                                color: "inherit",
                             }}
-                        >
-                            New Theme
-                        </Button>
+                        />
 
                         {/* GitHub Link */}
                         <Tooltip title="View on GitHub">
@@ -220,12 +206,7 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
 
                     {/* ===== Mobile dropdown ===== */}
                     <Box sx={{ display: { xs: "flex", sm: "none" }, flexShrink: 0 }}>
-                        <MobileMenu
-                            themeName={themeName}
-                            setThemeName={setThemeName}
-                            themes={themes}
-                            onOpenNewTheme={() => setOpen(true)}
-                        />
+                        <MobileMenu/>
                     </Box>
                 </Toolbar>
             </AppBar>
@@ -240,20 +221,14 @@ export default function App({ themeName, setThemeName, themes, refreshThemes }) 
             >
                 <AccountTabs account={accounts[active]} />
             </Box>
-
-            {/* ======= Custom Theme Dialog ======= */}
-            <CustomThemeDialog
-                open={open}
-                onClose={() => setOpen(false)}
-                refresh={refreshThemes}
-            />
         </Box>
     );
 }
 
-function MobileMenu({ themeName, setThemeName, themes, onOpenNewTheme }) {
+function MobileMenu() {
     const [anchorEl, setAnchorEl] = useState(null);
     const open = Boolean(anchorEl);
+    const { onEditTheme, activeTheme } = useThemeManager();
 
     return (
         <>
@@ -272,48 +247,29 @@ function MobileMenu({ themeName, setThemeName, themes, onOpenNewTheme }) {
                 anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
             >
                 {/* Theme selector */}
-                <Box
-                    sx={{
-                        px: 2,
-                        py: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
-                        color: "text.primary",
-                    }}
-                >
-                    <Typography variant="body2" sx={{ minWidth: 50 }}>
-                        Theme:
-                    </Typography>
-                    <Select
-                        value={themeName}
-                        onChange={(e) => {
-                            setThemeName(e.target.value);
-                            setAnchorEl(null);
-                        }}
-                        size="small"
-                        variant="outlined"
-                        sx={{
+                <ThemeSelector
+                    selectProps={{
+                        size: "small",
+                        variant: "outlined",
+                        sx: {
                             fontSize: "0.85rem",
                             minWidth: 120,
                             "& .MuiSelect-icon": { fontSize: 18 },
-                        }}
-                    >
-                        {Object.keys(themes).map((name) => (
-                            <MenuItem key={name} value={name}>
-                                {name.charAt(0).toUpperCase() + name.slice(1)}
-                            </MenuItem>
-                        ))}
-                    </Select>
-                </Box>
+                        }
+                    }}
+                />
 
                 <MenuItem
-                    onClick={() => {
-                        onOpenNewTheme();
+                    onClick={(e) => {
                         setAnchorEl(null);
-                    }}
+                        onEditTheme({
+                            id: `custom-${Date.now()}`,
+                            name: "",
+                            isPreset: false,
+                            themeOptions: deepClone(activeTheme.themeOptions),
+                        }, undefined)}
+                    }
                 >
-                    <AddIcon fontSize="small" sx={{ mr: 1 }} />
                     New Theme
                 </MenuItem>
 
