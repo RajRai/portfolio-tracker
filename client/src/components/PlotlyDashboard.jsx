@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, memo } from "react";
+import React, {useEffect, useState, useRef, memo, useMemo} from "react";
 import {
     Button,
     CircularProgress,
@@ -37,47 +37,82 @@ const PerformanceTable = memo(({ tableData, theme }) => (
         }}
     >
         <style>{`
-      .performance-table table {
-        width: 100%;
-        border-collapse: collapse;
-        text-align: center;
-        min-width: 480px;
-        border-radius: 8px;
-        overflow: hidden; /* 👈 key line */
-        background: ${theme.palette.background.paper};
-      }
-      .performance-table thead tr {
-        background: ${theme.palette.action.hover};
-      }
-      .performance-table th, .performance-table td {
-        padding: 10px 12px;
-        border-bottom: 1px solid ${theme.palette.divider};
-        color: inherit !important;
-        transition: color 0.25s ease;
-      }
-      /* remove last-row divider and ghost gap */
-      .performance-table tbody tr:last-child td {
-        border-bottom: none;
-      }
-      .performance-table td.gain {
-        color: ${theme.palette.success.light} !important;
-      }
-      .performance-table td.loss {
-        color: ${theme.palette.error.light} !important;
-      }
-      .performance-table td.excess-pos {
-        color: ${theme.palette.success.main} !important;
-        font-weight: 600;
-      }
-      .performance-table td.excess-neg {
-        color: ${theme.palette.error.main} !important;
-        font-weight: 600;
-      }
-      .performance-table td.excess-flat {
-        color: ${theme.palette.text.primary} !important;
-        font-weight: 600;
-      }
-    `}</style>
+  .performance-table table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: center;
+    table-layout: fixed;           /* key: prevents columns from expanding */
+    border-radius: 8px;
+    overflow: hidden;
+    background: ${theme.palette.background.paper};
+  }
+
+  .performance-table thead tr {
+    background: ${theme.palette.action.hover};
+  }
+
+  .performance-table th,
+  .performance-table td {
+    padding: 8px 10px;             /* tighter than 10/12 */
+    border-bottom: 1px solid ${theme.palette.divider};
+    color: inherit !important;
+    transition: color 0.25s ease;
+    white-space: nowrap;           /* key: keeps numbers compact */
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;              /* key: prevent forcing horizontal scroll */
+    text-overflow: ellipsis;
+  }
+
+  /* Make headers less chunky without killing alignment */
+  .performance-table th {
+    font-weight: 600;
+  }
+
+  /* remove last-row divider and ghost gap */
+  .performance-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .performance-table td.gain {
+    color: ${theme.palette.success.light} !important;
+  }
+  .performance-table td.loss {
+    color: ${theme.palette.error.light} !important;
+  }
+  .performance-table td.excess-pos {
+    color: ${theme.palette.success.main} !important;
+    font-weight: 600;
+  }
+  .performance-table td.excess-neg {
+    color: ${theme.palette.error.main} !important;
+    font-weight: 600;
+  }
+  .performance-table td.excess-flat {
+    color: ${theme.palette.text.primary} !important;
+    font-weight: 600;
+  }
+
+  /* ✅ Mobile density: shrink font + padding */
+  @media (max-width: 600px) {
+    .performance-table table {
+      font-size: 0.82rem;
+    }
+    .performance-table th,
+    .performance-table td {
+      padding: 6px 6px;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .performance-table table {
+      font-size: 0.76rem;
+    }
+    .performance-table th,
+    .performance-table td {
+      padding: 5px 4px;
+    }
+  }
+`}</style>
 
         <table style={{marginBottom: 0}}>
             <thead>
@@ -126,14 +161,17 @@ export default function PlotlyDashboard({ account }) {
     const [range, setRange] = useState("all");
     const [Plotly, setPlotly] = useState(null);
 
-    // Chart refs
-    const charts = {
-        cum: useRef(null),
-        daily: useRef(null),
-        spreadDaily: useRef(null),
-        spreadCum: useRef(null),
-        weights: useRef(null),
-    };
+    // ✅ stable refs
+    const charts = useMemo(
+        () => ({
+            cum: React.createRef(),
+            daily: React.createRef(),
+            spreadDaily: React.createRef(),
+            spreadCum: React.createRef(),
+            weights: React.createRef(),
+        }),
+        []
+    );
 
     // 🚀 Lazy-load Plotly once
     useEffect(() => {

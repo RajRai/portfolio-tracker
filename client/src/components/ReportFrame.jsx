@@ -1,147 +1,194 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "@mui/material/styles";
 
 export default function ReportFrame({ src }) {
-    const [html, setHtml] = useState("");
     const theme = useTheme();
+    const iframeRef = useRef(null);
+    const [iframeUrl, setIframeUrl] = useState("");
+    const [height, setHeight] = useState(800);
+
+    const injectedCSS = `
+  :root { color-scheme: ${theme.palette.mode}; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: ${theme.palette.background.default} !important;
+    color: ${theme.palette.text.primary} !important;
+  }
+
+  body { padding: 16px; }
+
+/* ==== Restore QuantStats 2-column layout ==== */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* clearfix so floated columns don't escape the container */
+.container::after {
+  content: "";
+  display: table;
+  clear: both;
+}
+
+/* desktop: float columns */
+#left {
+  float: left !important;
+  width: calc(100% - 400px) !important;  /* leaves room for right column */
+}
+
+#right {
+  float: right !important;
+  width: 380px !important;              /* tune this */
+}
+
+/* mobile: stack */
+@media (max-width: 1050px) {
+  #left, #right {
+    float: none !important;
+    width: auto !important;
+  }
+}
+
+/* ==== SVG sizing (critical after removing width/height attrs) ==== */
+svg {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+}
+
+/* === Table theming using MUI palette === */
+table {
+  color: ${theme.palette.text.primary} !important;
+  background: ${theme.palette.background.paper} !important;
+  border-color: ${theme.palette.divider} !important;
+}
+
+table th, table td {
+  color: ${theme.palette.text.primary} !important;
+  border-color: ${theme.palette.divider} !important;
+}
+
+table thead th {
+  background: ${theme.palette.action.hover} !important;
+  font-weight: 600 !important;
+}
+
+`;
 
     useEffect(() => {
-        fetch(src)
-            .then((r) => r.text())
-            .then((raw) => {
-                let processed = raw;
+        if (!src) return;
+        let cancelled = false;
 
-                // --- Fix inline SVG width/height (handles pt, px, mixed) ---
-                processed = processed.replace(
-                    /<svg([^>]*?)width=["']([\d.]+)(pt|px)?["']([^>]*?)height=["']([\d.]+)(pt|px)?["']/gi,
-                    (m, preW, wVal, wUnit, mid, hVal, hUnit) => {
-                        let w = parseFloat(wVal);
-                        let h = parseFloat(hVal);
-                        if (wUnit === "pt") w *= 1.3333;
-                        if (hUnit === "pt") h *= 1.3333;
-                        if (w > 300) { w /= 2; h /= 2; }
-                        return `<svg${preW}width="${Math.round(w)}px"${mid}height="${Math.round(h)}px"`;
-                    }
-                );
+        (async () => {
+            const raw = await fetch(src).then((r) => r.text());
+            if (cancelled) return;
 
-                // --- Also fix solo width="501pt" SVGs ---
-                processed = processed.replace(
-                    /width\s*=\s*["']\s*([\d.]+)\s*pt\s*["']/gi,
-                    (_, w) => `width="${Math.round((parseFloat(w) * 1.3333) / 2)}px"`
-                );
+            // 1) kill body onload="save()" without parsing
+            let html = raw.replace(/<body([^>]*)\sonload=["'][^"']*["']([^>]*)>/i, "<body$1$2>");
 
-                // --- Fix left/right column widths ---
-                processed = processed.replace(
-                    /(<div[^>]+id=["']left["'][^>]+style=["'][^"']*?)width\s*:\s*\d+px\s*;?/gi,
-                    '$1width: 90vw; margin: 0 auto;'
-                );
-                processed = processed.replace(
-                    /(<div[^>]+id=["']right["'][^>]+style=["'][^"']*?)width\s*:\s*\d+px\s*;?/gi,
-                    '$1width: 90vw; margin: 0 auto;'
-                );
+            // 2) ensure <base target="_blank"> exists
+            if (/<head[^>]*>/i.test(html) && !/<base\b/i.test(html)) {
+                html = html.replace(/<head[^>]*>/i, (m) => `${m}\n<base target="_blank" />`);
+            }
 
-                // --- Strip outer <html> and <body> tags to prevent conflicts ---
-                processed = processed.replace(/<\/?(html|body)[^>]*>/gi, "");
+            // 3) inject our CSS late in <head> so it overrides QuantStats
+            if (/<\/head>/i.test(html)) {
+                html = html.replace(/<\/head>/i, `<style>${injectedCSS}</style></head>`);
+            } else {
+                html = `<style>${injectedCSS}</style>\n` + html;
+            }
 
-                setHtml(processed);
-            })
-            .catch(console.error);
-    }, [src]);
+            // 4) load via blob URL so browser parses it natively (no DOMParser round-trip)
+            const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            setIframeUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return url;
+            });
+        })().catch(console.error);
 
-    if (!html) return <div style={{ padding: 16 }}>Loading report...</div>;
+        return () => {
+            cancelled = true;
+            setIframeUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return "";
+            });
+        };
+    }, [src, injectedCSS]);
 
-    // ✅ All rules scoped under `.report-frame`
-    const overrideCSS = `
-      .report-frame {
-        background-color: ${theme.palette.background.default} !important;
-        color: ${theme.palette.text.primary} !important;
-        font-family: ${theme.typography.fontFamily};
-        overflow-x: hidden !important;
-        width: 100%;
-      }
+    // resize + patch SVG after iframe loads
+    useEffect(() => {
+        const iframe = iframeRef.current;
+        if (!iframe) return;
 
-      .report-frame h1,
-      .report-frame h2,
-      .report-frame h3,
-      .report-frame h4,
-      .report-frame h5,
-      .report-frame h6 {
-        color: ${theme.palette.text.primary} !important;
-      }
+        let ro = null;
+        let raf = 0;
 
-      .report-frame a {
-        color: ${theme.palette.primary.main} !important;
-      }
+        const measure = () => {
+            cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(() => {
+                const doc = iframe.contentDocument;
+                if (!doc) return;
+                const h = Math.max(doc.documentElement?.scrollHeight || 0, doc.body?.scrollHeight || 0);
+                if (h && Math.abs(h - height) > 4) setHeight(h);
+            });
+        };
 
-      .report-frame table {
-        border-collapse: collapse !important;
-        width: 100% !important;
-        background-color: transparent !important;
-      }
+        const onLoad = () => {
+            const doc = iframe.contentDocument;
+            if (!doc) return;
 
-      .report-frame th,
-      .report-frame td {
-        border: 1px solid ${theme.palette.divider} !important;
-        color: ${theme.palette.text.primary} !important;
-        background: transparent !important;
-      }
+            // Patch SVG sizing *after* native parse
+            doc.querySelectorAll("svg").forEach((svg) => {
+                // safest: keep viewBox, remove fixed sizing
+                svg.removeAttribute("width");
+                svg.removeAttribute("height");
+                if (!svg.getAttribute("preserveAspectRatio")) {
+                    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+                }
+            });
 
-      th {
-        background-color: ${theme.palette.action.hover} !important;
-        color: ${theme.palette.text.primary} !important;
-        font-weight: 600 !important;
-      }
+            const measureSoon = () => requestAnimationFrame(measure);
+            measureSoon();
+            setTimeout(measure, 50);
+            setTimeout(measure, 250);
+            setTimeout(measure, 750);
 
-      .report-frame tr:nth-of-type(even) td {
-        background-color: ${theme.palette.action.selected} !important;
-      }
+            measure();
 
-      .report-frame #left,
-      .report-frame #right {
-        display: inline-block !important;
-        vertical-align: top !important;
-        margin: 0 auto !important;
-        max-width: 90vw !important;
-        float: none !important;
-      }
+            try {
+                ro = new ResizeObserver(measure);
+                ro.observe(doc.documentElement);
+                if (doc.body) ro.observe(doc.body);
+            } catch {}
+        };
 
-      .report-frame #left img,
-      .report-frame #left svg,
-      .report-frame #right img,
-      .report-frame #right svg {
-        display: block !important;
-        margin: 12px auto !important;
-        height: auto !important;
-        max-width: 100% !important;
-      }
+        iframe.addEventListener("load", onLoad);
+        return () => {
+            iframe.removeEventListener("load", onLoad);
+            if (ro) ro.disconnect();
+            cancelAnimationFrame(raf);
+        };
+    }, [iframeUrl, height]);
 
-      /* ✅ Responsive stacking */
-      @media (max-width: 900px) {
-        .report-frame #left,
-        .report-frame #right {
-          display: block !important;
-          width: 90vw !important;
-          margin: 0 auto 24px auto !important;
-          text-align: center !important;
-        }
-      }
-    `;
-
-    const themedHtml = html.includes("</head>")
-        ? html.replace("</head>", `<style>${overrideCSS}</style></head>`)
-        : `<style>${overrideCSS}</style>` + html;
+    if (!iframeUrl) return <div style={{ padding: 16 }}>Loading report...</div>;
 
     return (
-        <div
-            className="report-frame"
+        <iframe
+            ref={iframeRef}
+            title="QuantStats Report"
+            sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+            src={iframeUrl}
             style={{
-                background: theme.palette.background.default,
-                color: theme.palette.text.primary,
-                fontFamily: theme.typography.fontFamily,
                 width: "100%",
-                overflowX: "hidden",
+                height,
+                border: 0,
+                display: "block",
+                background: theme.palette.background.default,
+                borderRadius: 12,
             }}
-            dangerouslySetInnerHTML={{ __html: themedHtml }}
         />
     );
 }
