@@ -93,6 +93,17 @@ table thead th {
   background: ${theme.palette.action.hover} !important;
   font-weight: 600 !important;
 }
+
+/* === Force QuantStats grid lines back on === */
+table {
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  border: 1px solid ${theme.palette.divider} !important;
+}
+
+table th, table td {
+  border: 1px solid ${theme.palette.divider} !important;
+}
 `;
 
     useEffect(() => {
