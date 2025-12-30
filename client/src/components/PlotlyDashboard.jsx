@@ -1,4 +1,4 @@
-import React, {useEffect, useState, useRef, memo, useMemo} from "react";
+import React, { useEffect, useState, memo, useMemo } from "react";
 import {
     Button,
     CircularProgress,
@@ -33,88 +33,88 @@ const PerformanceTable = memo(({ tableData, theme }) => (
             position: "relative",
             display: "inline-block",
             width: "100%",
-            marginBottom: 0
+            marginBottom: 0,
         }}
     >
         <style>{`
-  .performance-table table {
-    width: 100%;
-    border-collapse: collapse;
-    text-align: center;
-    table-layout: fixed;           /* key: prevents columns from expanding */
-    border-radius: 8px;
-    overflow: hidden;
-    background: ${theme.palette.background.paper};
-  }
+      .performance-table table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: center;
+        table-layout: fixed;           /* key: prevents columns from expanding */
+        border-radius: 8px;
+        overflow: hidden;
+        background: ${theme.palette.background.paper};
+      }
 
-  .performance-table thead tr {
-    background: ${theme.palette.action.hover};
-  }
+      .performance-table thead tr {
+        background: ${theme.palette.action.hover};
+      }
 
-  .performance-table th,
-  .performance-table td {
-    padding: 8px 10px;             /* tighter than 10/12 */
-    border-bottom: 1px solid ${theme.palette.divider};
-    color: inherit !important;
-    transition: color 0.25s ease;
-    white-space: nowrap;           /* key: keeps numbers compact */
-    font-variant-numeric: tabular-nums;
-    overflow: hidden;              /* key: prevent forcing horizontal scroll */
-    text-overflow: ellipsis;
-  }
+      .performance-table th,
+      .performance-table td {
+        padding: 8px 10px;             /* tighter than 10/12 */
+        border-bottom: 1px solid ${theme.palette.divider};
+        color: inherit !important;
+        transition: color 0.25s ease;
+        white-space: nowrap;           /* key: keeps numbers compact */
+        font-variant-numeric: tabular-nums;
+        overflow: hidden;              /* key: prevent forcing horizontal scroll */
+        text-overflow: ellipsis;
+      }
 
-  /* Make headers less chunky without killing alignment */
-  .performance-table th {
-    font-weight: 600;
-  }
+      /* Make headers less chunky without killing alignment */
+      .performance-table th {
+        font-weight: 600;
+      }
 
-  /* remove last-row divider and ghost gap */
-  .performance-table tbody tr:last-child td {
-    border-bottom: none;
-  }
+      /* remove last-row divider and ghost gap */
+      .performance-table tbody tr:last-child td {
+        border-bottom: none;
+      }
 
-  .performance-table td.gain {
-    color: ${theme.palette.success.light} !important;
-  }
-  .performance-table td.loss {
-    color: ${theme.palette.error.light} !important;
-  }
-  .performance-table td.excess-pos {
-    color: ${theme.palette.success.main} !important;
-    font-weight: 600;
-  }
-  .performance-table td.excess-neg {
-    color: ${theme.palette.error.main} !important;
-    font-weight: 600;
-  }
-  .performance-table td.excess-flat {
-    color: ${theme.palette.text.primary} !important;
-    font-weight: 600;
-  }
+      .performance-table td.gain {
+        color: ${theme.palette.success.light} !important;
+      }
+      .performance-table td.loss {
+        color: ${theme.palette.error.light} !important;
+      }
+      .performance-table td.excess-pos {
+        color: ${theme.palette.success.main} !important;
+        font-weight: 600;
+      }
+      .performance-table td.excess-neg {
+        color: ${theme.palette.error.main} !important;
+        font-weight: 600;
+      }
+      .performance-table td.excess-flat {
+        color: ${theme.palette.text.primary} !important;
+        font-weight: 600;
+      }
 
-  /* ✅ Mobile density: shrink font + padding */
-  @media (max-width: 600px) {
-    .performance-table table {
-      font-size: 0.82rem;
-    }
-    .performance-table th,
-    .performance-table td {
-      padding: 6px 6px;
-    }
-  }
+      /* ✅ Mobile density: shrink font + padding */
+      @media (max-width: 600px) {
+        .performance-table table {
+          font-size: 0.82rem;
+        }
+        .performance-table th,
+        .performance-table td {
+          padding: 6px 6px;
+        }
+      }
 
-  @media (max-width: 420px) {
-    .performance-table table {
-      font-size: 0.76rem;
-    }
-    .performance-table th,
-    .performance-table td {
-      padding: 5px 4px;
-    }
-  }
-`}</style>
+      @media (max-width: 420px) {
+        .performance-table table {
+          font-size: 0.76rem;
+        }
+        .performance-table th,
+        .performance-table td {
+          padding: 5px 4px;
+        }
+      }
+    `}</style>
 
-        <table style={{marginBottom: 0}}>
+        <table style={{ marginBottom: 0 }}>
             <thead>
             <tr>
                 <th>Period</th>
@@ -204,7 +204,28 @@ export default function PlotlyDashboard({ account }) {
                 if (ref.current && Plotly) Plotly.purge(ref.current);
             });
         };
-    }, [account, Plotly]);
+    }, [account, Plotly, charts]);
+
+    // ✅ MINIMAL CHANGE: resize Plotly charts on window size changes
+    useEffect(() => {
+        if (!Plotly) return;
+
+        let raf = 0;
+        const onResize = () => {
+            cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(() => {
+                Object.values(charts).forEach((ref) => {
+                    if (ref.current) Plotly.Plots.resize(ref.current);
+                });
+            });
+        };
+
+        window.addEventListener("resize", onResize);
+        return () => {
+            window.removeEventListener("resize", onResize);
+            cancelAnimationFrame(raf);
+        };
+    }, [Plotly, charts]);
 
     const dateMinusDays = (d, n) => {
         const dt = new Date(d);
@@ -304,9 +325,7 @@ export default function PlotlyDashboard({ account }) {
                     x: arrX(payload.spread.daily),
                     y: arrY(payload.spread.daily),
                     marker: {
-                        color: payload.spread.daily.map((p) =>
-                            p.v >= 0 ? "#3ac569" : "#e74c3c"
-                        ),
+                        color: payload.spread.daily.map((p) => (p.v >= 0 ? "#3ac569" : "#e74c3c")),
                     },
                 },
             ],
@@ -372,12 +391,19 @@ export default function PlotlyDashboard({ account }) {
             hovermode: "x",
         });
 
+        // After initial render, do a resize pass once layout has settled
+        requestAnimationFrame(() => {
+            Object.values(charts).forEach((ref) => {
+                if (ref.current) Plotly.Plots.resize(ref.current);
+            });
+        });
+
         return () => {
             Object.values(charts).forEach((ref) => {
                 if (ref.current) Plotly.purge(ref.current);
             });
         };
-    }, [data, Plotly, theme]);
+    }, [data, Plotly, theme, charts]);
 
     const handleSetRange = (r) => {
         setRange(r);
@@ -390,8 +416,7 @@ export default function PlotlyDashboard({ account }) {
             const endDate = new Date(end);
             const startDate = dateMinusDays(endDate, rangeToDays(r));
             ids.forEach(
-                (el) =>
-                    el && Plotly.relayout(el, { "xaxis.range": [startDate, endDate] })
+                (el) => el && Plotly.relayout(el, { "xaxis.range": [startDate, endDate] })
             );
         }
     };
@@ -404,7 +429,9 @@ export default function PlotlyDashboard({ account }) {
 
     // Find index at-or-before a cutoff date
     const idxAtOrBefore = (series, cutoffMs) => {
-        let lo = 0, hi = series.length - 1, ans = -1;
+        let lo = 0,
+            hi = series.length - 1,
+            ans = -1;
         while (lo <= hi) {
             const mid = (lo + hi) >> 1;
             if (ms(series[mid].t) <= cutoffMs) {
@@ -419,7 +446,9 @@ export default function PlotlyDashboard({ account }) {
 
     // First index on-or-after a date
     const idxOnOrAfter = (series, targetMs) => {
-        let lo = 0, hi = series.length - 1, ans = series.length;
+        let lo = 0,
+            hi = series.length - 1,
+            ans = series.length;
         while (lo <= hi) {
             const mid = (lo + hi) >> 1;
             if (ms(series[mid].t) >= targetMs) {
@@ -493,24 +522,26 @@ export default function PlotlyDashboard({ account }) {
     ];
 
     // Compute table data
-    const tableData = rawTimeframes.map(([label, span]) => {
-        let p = null, b = null;
-        if (label === "1D") {
-            p = oneDayReturn(data.portfolio.daily, data.portfolio.equity);
-            b = oneDayReturn(data.benchmark.daily, data.benchmark.equity);
-        } else if (label === "YTD") {
-            p = ytdReturn(data.portfolio.equity);
-            b = ytdReturn(data.benchmark.equity);
-        } else if (typeof span === "number") {
-            // Only compute if we plausibly have that much history
-            if (availableDays >= Math.min(span, availableDays)) {
-                p = periodReturn(data.portfolio.equity, span);
-                b = periodReturn(data.benchmark.equity, span);
+    const tableData = rawTimeframes
+        .map(([label, span]) => {
+            let p = null,
+                b = null;
+            if (label === "1D") {
+                p = oneDayReturn(data.portfolio.daily, data.portfolio.equity);
+                b = oneDayReturn(data.benchmark.daily, data.benchmark.equity);
+            } else if (label === "YTD") {
+                p = ytdReturn(data.portfolio.equity);
+                b = ytdReturn(data.benchmark.equity);
+            } else if (typeof span === "number") {
+                if (availableDays >= Math.min(span, availableDays)) {
+                    p = periodReturn(data.portfolio.equity, span);
+                    b = periodReturn(data.benchmark.equity, span);
+                }
             }
-        }
-        const diff = p != null && b != null ? p - b : null;
-        return { label, p, b, diff };
-    }).filter(row => row.p != null || row.b != null || row.diff != null); // drop completely unavailable rows
+            const diff = p != null && b != null ? p - b : null;
+            return { label, p, b, diff };
+        })
+        .filter((row) => row.p != null || row.b != null || row.diff != null);
 
     const renderSection = (title, ref) => (
         <div style={{ marginBottom: 48 }}>
@@ -531,22 +562,13 @@ export default function PlotlyDashboard({ account }) {
                 pb: 6,
             }}
         >
-            {/* subtle top divider to separate from header */}
             <Divider sx={{ mb: 3, opacity: 0.4 }} />
 
-            {/* 📊 Performance Comparison Table */}
             <Box sx={{ mb: 4 }}>
                 <PerformanceTable tableData={tableData} theme={theme} />
             </Box>
 
-            {/* 🔹 Range Buttons */}
-            <Stack
-                direction="row"
-                spacing={1.5}
-                useFlexGap
-                flexWrap="wrap"
-                sx={{ mb: 4 }}
-            >
+            <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ mb: 4 }}>
                 {["1m", "3m", "6m", "1y", "all"].map((r) => (
                     <Button
                         key={r}
