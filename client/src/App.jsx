@@ -199,10 +199,6 @@ export default function App() {
                             selectProps={{
                                 size: "small",
                                 variant: "outlined",
-                                onChange: (e) => {
-                                    // ThemeSelector will handle the change internally; we just track it.
-                                    umamiTrack("theme_selected", { theme_id: e?.target?.value });
-                                },
                                 sx: {
                                     fontSize: "0.8rem",
                                     height: 30,
@@ -216,7 +212,6 @@ export default function App() {
                         <NewThemeButton
                             buttonProps={{
                                 color: "inherit",
-                                onClick: () => umamiTrack("new_theme_button_click", { location: "appbar_desktop" }),
                             }}
                         />
 
