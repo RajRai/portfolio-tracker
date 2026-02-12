@@ -124,9 +124,9 @@ const PerformanceTable = memo(({ tableData, theme }) => (
             </tr>
             </thead>
             <tbody>
-            {tableData.map(({ label, p, b, diff }) => (
+            {tableData.map(({ label, displayLabel, p, b, diff }) => (
                 <tr key={label}>
-                    <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{label}</td>
+                    <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{displayLabel || label}</td>
                     <td className={p == null ? "" : p > 0 ? "gain" : "loss"}>
                         {p != null ? (p * 100).toFixed(1) + "%" : "—"}
                     </td>
@@ -427,6 +427,15 @@ export default function PlotlyDashboard({ account }) {
     // --- 📈 Robust performance comparison helpers ---
     const ms = (d) => (d instanceof Date ? d.getTime() : new Date(d).getTime());
 
+    const fmtSince = (isoDateStr) => {
+        if (!isoDateStr) return "";
+        const d = new Date(isoDateStr);
+        if (Number.isNaN(d.getTime())) return "";
+        return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+    };
+
+    const firstDateStr = (series) => (series?.length ? series[0]?.t : null);
+
     // Find index at-or-before a cutoff date
     const idxAtOrBefore = (series, cutoffMs) => {
         let lo = 0,
@@ -499,7 +508,16 @@ export default function PlotlyDashboard({ account }) {
         return periodReturn(equitySeries, 1);
     };
 
-    // Build timeframes respecting available history
+    // All-time return from first equity point to last
+    const allTimeReturn = (series) => {
+        if (!series?.length) return null;
+        const start = series[0]?.v;
+        const end = series[series.length - 1]?.v;
+        if (start == null || end == null || start === 0) return null;
+        return end / start - 1;
+    };
+
+    // Build timeframes with YTD inserted in the “correct” position
     const eq = data.portfolio.equity || [];
     const availableDays = (() => {
         if (eq.length < 2) return 0;
@@ -508,38 +526,79 @@ export default function PlotlyDashboard({ account }) {
         return Math.floor((end - start) / (1000 * 60 * 60 * 24));
     })();
 
-    const rawTimeframes = [
+    const lastEqDate = (() => (eq.length ? new Date(eq[eq.length - 1].t) : null))();
+
+    const ytdDays = (() => {
+        if (!lastEqDate) return null;
+        const jan1 = new Date(lastEqDate.getFullYear(), 0, 1);
+        const days = Math.floor((lastEqDate - jan1) / (1000 * 60 * 60 * 24));
+        return Math.max(0, days);
+    })();
+
+    // “Fixed” windows (exclude YTD; we’ll insert it)
+    const fixedTimeframes = [
         ["1D", "1D"],
         ["7D", 7],
         ["30D", 30],
         ["3M", 90],
         ["6M", 180],
-        ["YTD", "YTD"],
         ["1Y", 365],
         ["3Y", 365 * 3],
         ["5Y", 365 * 5],
         ["10Y", 365 * 10],
+        ["ALL", "ALL"],
     ];
 
+    // Insert YTD right after the largest fixed window <= ytdDays (or after 1D if early year)
+    const timeframes = (() => {
+        if (ytdDays == null) return fixedTimeframes;
+
+        // Find insertion index (after last numeric span <= ytdDays, but keep 1D first)
+        let insertAt = 1; // default: after 1D
+        for (let i = 0; i < fixedTimeframes.length; i++) {
+            const [, span] = fixedTimeframes[i];
+            if (typeof span === "number" && span <= ytdDays) {
+                insertAt = i + 1;
+            }
+        }
+
+        const out = fixedTimeframes.slice();
+        out.splice(insertAt, 0, ["YTD", "YTD"]);
+        return out;
+    })();
+
     // Compute table data
-    const tableData = rawTimeframes
+    const tableData = timeframes
         .map(([label, span]) => {
-            let p = null,
-                b = null;
+            let p = null, b = null;
+
             if (label === "1D") {
                 p = oneDayReturn(data.portfolio.daily, data.portfolio.equity);
                 b = oneDayReturn(data.benchmark.daily, data.benchmark.equity);
             } else if (label === "YTD") {
                 p = ytdReturn(data.portfolio.equity);
                 b = ytdReturn(data.benchmark.equity);
+            } else if (label === "ALL") {
+                p = allTimeReturn(data.portfolio.equity);
+                b = allTimeReturn(data.benchmark.equity);
             } else if (typeof span === "number") {
                 if (availableDays >= Math.min(span, availableDays)) {
                     p = periodReturn(data.portfolio.equity, span);
                     b = periodReturn(data.benchmark.equity, span);
                 }
             }
+
             const diff = p != null && b != null ? p - b : null;
-            return { label, p, b, diff };
+
+            const displayLabel =
+                label === "ALL"
+                    ? (() => {
+                        const since = fmtSince(firstDateStr(data.portfolio.equity));
+                        return since ? `ALL (since ${since})` : "ALL";
+                    })()
+                    : label;
+
+            return { label, displayLabel, p, b, diff };
         })
         .filter((row) => row.p != null || row.b != null || row.diff != null);
 
