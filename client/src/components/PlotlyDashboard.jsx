@@ -590,13 +590,7 @@ export default function PlotlyDashboard({ account }) {
 
             const diff = p != null && b != null ? p - b : null;
 
-            const displayLabel =
-                label === "ALL"
-                    ? (() => {
-                        const since = fmtSince(firstDateStr(data.portfolio.equity));
-                        return since ? `ALL (since ${since})` : "ALL";
-                    })()
-                    : label;
+            const displayLabel = label;
 
             return { label, displayLabel, p, b, diff };
         })
