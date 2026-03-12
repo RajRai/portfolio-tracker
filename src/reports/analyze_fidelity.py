@@ -207,7 +207,7 @@ def main():
         out_path = out_dir / f"report_{i}.html"
 
         spy_df = get_polygon_prices([BENCHMARK], start, end)
-        spy_returns = spy_df["SPY"].pct_change().fillna(0)
+        spy_returns = spy_df[BENCHMARK].pct_change().fillna(0)
 
         qs.reports.html(
             returns,
