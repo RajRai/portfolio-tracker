@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { Tabs, Tab, Box } from "@mui/material";
 import CSVTable from "./CSVTable.jsx";
 import PlotlyDashboard from "./PlotlyDashboard.jsx";
+import PortfolioAbout from "./PortfolioAbout.jsx";
 
 function umamiTrack(eventName, data) {
     try {
@@ -71,6 +72,7 @@ export default function AccountTabs({ account }) {
 
             {/* ===== Scrollable Content Area ===== */}
             <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+                <PortfolioAbout about={account.about} />
                 {tab === "analytics" && <PlotlyDashboard key={account.id} account={account} />}
                 {tab === "holdings" && <CSVTable src={account.weights} title="Current Portfolio Holdings" />}
                 {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" />}

@@ -611,12 +611,10 @@ export default function PlotlyDashboard({ account }) {
             sx={{
                 width: "100%",
                 px: { xs: 1.5, sm: 3 },
-                pt: { xs: 2, sm: 3 },
+                pt: { xs: 0.5, sm: 1 },
                 pb: 6,
             }}
         >
-            <Divider sx={{ mb: 3, opacity: 0.4 }} />
-
             <Box sx={{ mb: 4 }}>
                 <PerformanceTable tableData={tableData} theme={theme} />
             </Box>

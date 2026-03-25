@@ -53,9 +53,7 @@ def load_accounts():
 
     try:
         with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # Convert to tuples if needed
-            return [(item["id"], item["name"]) for item in data]
+            return json.load(f)
     except Exception as e:
         print(f"❌ Error reading {ACCOUNTS_FILE}: {e}")
         return []
@@ -80,13 +78,15 @@ def main():
     # python analyze_portfolio.py REDACTED REDACTED
     if len(sys.argv) > 1:
         account_ids = sys.argv[1:]
-        accounts = [a for a in accounts if a[0] in account_ids]
+        accounts = [a for a in accounts if a["id"] in account_ids]
 
     # ============================================================
     #  Process each account
     # ============================================================
 
-    for i, (account_id, report_name) in enumerate(accounts):
+    for i, account in enumerate(accounts):
+        account_id = account["id"]
+        report_name = account["name"]
         merged_csv = BASE / account_id / "combined.csv"
         if not merged_csv.exists():
             print(f"⚠️ Skipping {account_id} (no merged CSV found)")
@@ -322,6 +322,7 @@ def main():
         accounts_entry = {
             "id": account_id,
             "name": report_name,
+            "about": account.get("about"),
             "report": f"/reports/report_{i}.html",
             "weights": f"/data/weights_{i}.csv",
             "trades": f"/data/trades_{i}.csv",
@@ -329,12 +330,14 @@ def main():
 
         index_path = out_dir / "accounts.json"
         if index_path.exists():
-            accounts_list = pd.read_json(index_path).to_dict(orient="records")
+            with open(index_path, "r", encoding="utf-8") as f:
+                accounts_list = json.load(f)
         else:
             accounts_list = []
         accounts_list = [a for a in accounts_list if a["id"] != account_id]
         accounts_list.append(accounts_entry)
-        pd.DataFrame(accounts_list).to_json(index_path, orient="records", indent=2)
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(accounts_list, f, indent=2)
 
         print(f"✅ CSVs generated for {account_id}")
 

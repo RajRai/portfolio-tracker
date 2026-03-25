@@ -1,5 +1,17 @@
 [
-  { "id": "REDACTED", "name": "Cloud, Semiconductors, Energy, Utilities" },
-  { "id": "REDACTED", "name": "Optical Computing" },
-  { "id": "ALL", "name": "All Trading History" }
+  {
+    "id": "REDACTED",
+    "name": "Cloud, Semiconductors, Energy, Utilities",
+    "about": "Core thesis:\nThis portfolio concentrates on infrastructure-heavy businesses tied to AI demand, power demand, and cloud expansion."
+  },
+  {
+    "id": "REDACTED",
+    "name": "Optical Computing",
+    "about": "This portfolio is focused on optical and photonics-oriented bets.\n\nUse this section for your own notes, risk framing, time horizon, or what would invalidate the thesis."
+  },
+  {
+    "id": "ALL",
+    "name": "All Trading History",
+    "about": "This aggregates all recorded trading activity across configured accounts."
+  }
 ]
