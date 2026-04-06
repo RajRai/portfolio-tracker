@@ -154,9 +154,11 @@ def main():
         # ============================================================
         start = df["Run Date"].min().strftime("%Y-%m-%d")
         end = datetime.now().strftime("%Y-%m-%d")
+        all_symbols = list(dict.fromkeys([*symbols, BENCHMARK]))
 
         print(f"Fetching Polygon prices {start} → {end}")
-        prices = get_polygon_prices(symbols, start, end)
+        all_prices = get_polygon_prices(all_symbols, start, end)
+        prices = all_prices.reindex(columns=symbols)
         if prices.empty:
             print(f"⚠️ No pricing data for {account_id}, skipping.")
             continue
@@ -206,7 +208,7 @@ def main():
         out_dir.mkdir(exist_ok=True)
         out_path = out_dir / f"report_{i}.html"
 
-        spy_df = get_polygon_prices([BENCHMARK], start, end)
+        spy_df = all_prices[[BENCHMARK]]
         spy_returns = spy_df[BENCHMARK].pct_change().fillna(0)
 
         qs.reports.html(

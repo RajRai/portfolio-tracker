@@ -18,6 +18,7 @@ def fake_polygon_get(url, *args, **kwargs):
     """Simulate Polygon behavior for 2025-10-13 → 2025-10-15."""
     mock_now = os.getenv("POLYGON_MOCK_NOW")
     include_today = os.getenv("POLYGON_INCLUDE_TODAY_DAILY") == "1"
+    disable_today_intraday = os.getenv("POLYGON_DISABLE_TODAY_INTRADAY") == "1"
     now_et = pd.Timestamp(mock_now, tz="America/New_York")
 
     # --- daily ---
@@ -35,6 +36,8 @@ def fake_polygon_get(url, *args, **kwargs):
 
     # --- intraday (1-min) ---
     elif "/range/1/minute/" in url:
+        if disable_today_intraday:
+            return make_response({"results": []})
         if now_et.date() == pd.Timestamp("2025-10-14").date():
             if now_et.time() < pd.Timestamp("09:30").time():
                 price = 100
@@ -157,6 +160,22 @@ def test_current_day_historical_handling(tmp_path, monkeypatch):
 # ============================================================
 #  Test 4: cache reuse verification
 # ============================================================
+def test_no_intraday_today_uses_last_trading_day(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 08:00:00")
+    monkeypatch.setenv("POLYGON_DISABLE_TODAY_INTRADAY", "1")
+
+    start, end = "2025-10-13", "2025-10-15"
+    prices = pf.get_polygon_prices(["AAPL", "SPY"], start, end)
+
+    assert list(prices.index) == [pd.Timestamp("2025-10-13"), pd.Timestamp("2025-10-14")]
+    assert list(map(float, prices["AAPL"].values)) == [100.0, 103.0]
+    assert list(map(float, prices["SPY"].values)) == [100.0, 103.0]
+
+
 class CallRecorder:
     def __init__(self):
         self.calls = []

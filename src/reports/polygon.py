@@ -45,9 +45,9 @@ def get_polygon_prices(symbols, start, end):
 
     Behavior:
       - Fetches daily closes for [start, fetch_end] where fetch_end = now - cutoff_days
-      - Always ensures a "today" row exists by defaulting to the most recent available close
-        (useful during pre-market / illiquid tickers with no minute bars yet)
-      - If intraday minute data exists for today, overwrites the fallback with the last minute close
+      - Only adds a shared "today" row if at least one symbol has a real intraday print today
+      - When that shared row exists, symbols without intraday prints fall back to their last close
+      - When no symbol has a real intraday print today, leaves the series at the last trading day
     """
     api_key = os.getenv("POLYGON_API_KEY")
     if not api_key:
@@ -60,7 +60,8 @@ def get_polygon_prices(symbols, start, end):
     # decide how many days back to include (keeps "daily" from including partial today)
     cutoff_days = 1
 
-    all_prices = {}
+    daily_series = {}
+    intraday_prices = {}
 
     for sym in symbols:
         # compute daily range to request/cache
@@ -92,11 +93,7 @@ def get_polygon_prices(symbols, start, end):
             .dt.normalize()
         )
         s = df.set_index("date_et")["c"].astype(float).sort_index()
-
-        # Ensure today's row exists even if intraday is missing (pre-market / illiquid).
-        # Fallback to last available close in the daily series.
-        if today_date not in s.index and len(s) > 0:
-            s.loc[today_date] = float(s.iloc[-1])
+        s = s[s.index != today_date]
 
         # Fetch intraday (always) and overwrite today's fallback if we have a real print.
         intra_url = (
@@ -104,12 +101,24 @@ def get_polygon_prices(symbols, start, end):
             f"{today_str}/{today_str}?adjusted=true&sort=desc&limit=2000&apiKey={api_key}"
         )
         r_intra = requests.get(intra_url)
+        intraday_price = None
         if r_intra.status_code == 200:
             res = r_intra.json().get("results", [])
             if res:
-                last_price = float(res[0]["c"])
-                s.loc[today_date] = last_price
+                intraday_price = float(res[0]["c"])
 
+        daily_series[sym] = s.sort_index()
+        intraday_prices[sym] = intraday_price
+
+    any_intraday_today = any(price is not None for price in intraday_prices.values())
+    all_prices = {}
+
+    for sym, s in daily_series.items():
+        if any_intraday_today and len(s) > 0:
+            last_price = intraday_prices[sym]
+            if last_price is None:
+                last_price = float(s.iloc[-1])
+            s.loc[today_date] = last_price
         all_prices[sym] = s.sort_index()
 
     # Return with naive (tz-less) dates as before
