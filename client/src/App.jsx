@@ -11,9 +11,11 @@ import {
     Box,
     IconButton,
     Tooltip,
+    ListSubheader,
     MenuItem,
 } from "@mui/material";
 import Menu from "@mui/material/Menu";
+import CheckIcon from "@mui/icons-material/Check";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import AccountTabs from "./components/AccountTabs.jsx";
@@ -261,7 +263,13 @@ export default function App() {
 function MobileMenu() {
     const [anchorEl, setAnchorEl] = useState(null);
     const open = Boolean(anchorEl);
-    const { onEditTheme, activeTheme } = useThemeManager();
+    const { onEditTheme, activeTheme, presets, customThemes, activeThemeId, setActiveTheme } = useThemeManager();
+    const themes = [...presets, ...customThemes];
+
+    const handleClose = () => {
+        setAnchorEl(null);
+        umamiTrack("mobile_menu_close", {});
+    };
 
     return (
         <>
@@ -278,32 +286,52 @@ function MobileMenu() {
             <Menu
                 anchorEl={anchorEl}
                 open={open}
-                onClose={() => {
-                    setAnchorEl(null);
-                    umamiTrack("mobile_menu_close", {});
-                }}
+                onClose={handleClose}
                 transformOrigin={{ horizontal: "right", vertical: "top" }}
                 anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+                MenuListProps={{ dense: true }}
             >
-                {/* Theme selector */}
-                <ThemeSelector
-                    selectProps={{
-                        size: "small",
-                        variant: "outlined",
-                        onChange: (e) => {
-                            umamiTrack("theme_selected", { theme_id: e?.target?.value, location: "mobile_menu" });
-                        },
-                        sx: {
-                            fontSize: "0.85rem",
-                            minWidth: 120,
-                            "& .MuiSelect-icon": { fontSize: 18 },
-                        },
-                    }}
-                />
+                <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>
+                    Theme
+                </ListSubheader>
+                {themes.map((themeOption) => (
+                    <MenuItem
+                        key={themeOption.id}
+                        selected={themeOption.id === activeThemeId}
+                        onClick={() => {
+                            setActiveTheme(themeOption.id);
+                            umamiTrack("theme_selected", {
+                                theme_id: themeOption.id,
+                                location: "mobile_menu",
+                            });
+                            handleClose();
+                        }}
+                        sx={{
+                            gap: 1,
+                            minWidth: 180,
+                            fontWeight: themeOption.id === activeThemeId ? 600 : 400,
+                        }}
+                    >
+                        <Box
+                            sx={{
+                                width: 18,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                color: "primary.main",
+                            }}
+                        >
+                            {themeOption.id === activeThemeId ? <CheckIcon fontSize="small" /> : null}
+                        </Box>
+                        <Typography variant="inherit" noWrap>
+                            {themeOption.name}
+                        </Typography>
+                    </MenuItem>
+                ))}
 
                 <MenuItem
                     onClick={() => {
-                        setAnchorEl(null);
+                        handleClose();
 
                         const newThemeId = `custom-${Date.now()}`;
                         umamiTrack("new_theme_menuitem_click", { location: "mobile_menu" });
@@ -327,9 +355,10 @@ function MobileMenu() {
                     href="https://github.com/RajRai/portfolio-tracker"
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={() =>
-                        umamiTrack("github_click", { location: "mobile_menu", href: "portfolio-tracker" })
-                    }
+                    onClick={() => {
+                        handleClose();
+                        umamiTrack("github_click", { location: "mobile_menu", href: "portfolio-tracker" });
+                    }}
                 >
                     <GitHubIcon fontSize="small" sx={{ mr: 1 }} />
                     View on GitHub
