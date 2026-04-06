@@ -50,6 +50,7 @@ export default function CSVTable({ src }) {
                 const cols = headers.map((h) => {
                     const sample = clean[0][h];
                     const numeric = isNumericLike(sample);
+                    const glColumn = h.includes("G/L");
                     return {
                         field: h,
                         headerName: h.replace(/_/g, " "),
@@ -59,6 +60,15 @@ export default function CSVTable({ src }) {
                         align: numeric ? "right" : "left",
                         headerAlign: numeric ? "right" : "left",
                         sortComparator,
+                        cellClassName: glColumn
+                            ? (params) => {
+                                const n = toNum(params.value);
+                                if (isNaN(n)) return "";
+                                if (n > 0) return "gl-pos";
+                                if (n < 0) return "gl-neg";
+                                return "gl-flat";
+                            }
+                            : undefined,
                     };
                 });
 
@@ -113,6 +123,18 @@ export default function CSVTable({ src }) {
                     },
                     "& .MuiDataGrid-row:hover": {
                         backgroundColor: (t) => t.palette.action.hover,
+                    },
+                    "& .MuiDataGrid-cell.gl-pos": {
+                        color: (t) => t.palette.success.main,
+                        fontWeight: 600,
+                    },
+                    "& .MuiDataGrid-cell.gl-neg": {
+                        color: (t) => t.palette.error.main,
+                        fontWeight: 600,
+                    },
+                    "& .MuiDataGrid-cell.gl-flat": {
+                        color: (t) => (t.palette.mode === "dark" ? t.palette.common.white : t.palette.text.primary),
+                        fontWeight: 600,
                     },
                 }}
             />
