@@ -167,6 +167,7 @@ export default function PlotlyDashboard({ account }) {
             cum: React.createRef(),
             daily: React.createRef(),
             spreadDaily: React.createRef(),
+            multipleDaily: React.createRef(),
             spreadCum: React.createRef(),
             weights: React.createRef(),
         }),
@@ -330,6 +331,28 @@ export default function PlotlyDashboard({ account }) {
                 },
             ],
             { yaxis: { tickformat: "+.2%", title: "Excess Return" } }
+        );
+
+        const multipleDaily = payload.multiple.daily;
+        const portfolioDailyByDate = Object.fromEntries(
+            payload.portfolio.daily.map((point) => [point.t, point.v])
+        );
+
+        // --- Daily Return Multiple vs Market
+        makePlot(
+            charts.multipleDaily,
+            [
+                {
+                    name: "Return Multiple",
+                    type: "bar",
+                    x: arrX(multipleDaily),
+                    y: arrY(multipleDaily),
+                    marker: {
+                        color: multipleDaily.map((p) => (portfolioDailyByDate[p.t] > 0 ? "#3ac569" : "#e74c3c")),
+                    },
+                },
+            ],
+            { yaxis: { tickformat: "+.2f", title: "Return Multiple" } }
         );
 
         // --- Cumulative Spread
@@ -637,6 +660,7 @@ export default function PlotlyDashboard({ account }) {
             {renderSection("Cumulative Performance vs Benchmark", charts.cum)}
             {renderSection("Daily Returns", charts.daily)}
             {renderSection("Daily Out/Under-Performance", charts.spreadDaily)}
+            {renderSection("Daily Return Multiple vs Market", charts.multipleDaily)}
             {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
             {renderSection("Holdings Over Time (Weights)", charts.weights)}
 

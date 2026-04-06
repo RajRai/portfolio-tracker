@@ -233,9 +233,16 @@ def main():
         port_eq = (1 + port_ret).cumprod()
         bench_eq = (1 + bench_ret).cumprod()
 
-        # Daily and cumulative spreads
+        # Daily relative-to-benchmark series
         daily_spread = (port_ret - bench_ret)
         cum_spread   = (1.0 + daily_spread).cumprod() - 1.0  # relative cumulative out/under-performance
+
+        def _clamp_for_multiple(s: pd.Series):
+            s = s.mask((s < 0) & (s > -0.001), -0.001)
+            s = s.mask((s >= 0) & (s < 0.001), 0.001)
+            return s
+
+        daily_multiple = _clamp_for_multiple(port_ret).div(_clamp_for_multiple(bench_ret))
 
         # Weights time series (already computed): `weights`
         weights_top = weights.copy()
@@ -270,6 +277,9 @@ def main():
             "spread": {
                 "daily": _series_to_pairs(daily_spread),
                 "cumulative": _series_to_pairs(cum_spread),
+            },
+            "multiple": {
+                "daily": _series_to_pairs(daily_multiple),
             },
             "weights": _frame_to_stacked_list(weights_top),
         }
