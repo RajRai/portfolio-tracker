@@ -216,3 +216,95 @@ def test_cache_miss_then_tail_then_stable(tmp_path, monkeypatch):
 
     pf.get_polygon_prices([sym], start, end)
     assert not any("/range/1/day/" in c for c in rec.calls), "Unexpected re-fetch"
+
+
+def test_yfinance_prefix_used_beyond_polygon_history_window(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    yf_cache_dir = tmp_path / "cache" / ".cache" / "yfinance" / "history"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    yf_cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(pf, "YFINANCE_HISTORY_CACHE_DIR", yf_cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 10:00:00")
+
+    calls = []
+
+    def fake_yfinance_download(symbol, **kwargs):
+        calls.append((symbol, kwargs["start"], kwargs["end"]))
+        return pd.DataFrame(
+            {
+                "Close": [50.0, 80.0],
+                "Stock Splits": [0.0, 0.0],
+            },
+            index=pd.to_datetime(["2020-10-13", "2020-10-14"]),
+        )
+
+    def fake_polygon_window(url, *args, **kwargs):
+        if "/range/1/day/" in url:
+            results = [
+                {"t": int(pd.Timestamp("2020-10-15", tz="America/New_York").tz_convert("UTC").timestamp() * 1000), "c": 81},
+                {"t": int(pd.Timestamp("2025-10-14", tz="America/New_York").tz_convert("UTC").timestamp() * 1000), "c": 103},
+            ]
+            return make_response({"results": results})
+        if "/range/1/minute/" in url:
+            ts = int(pd.Timestamp("2025-10-15 10:00:00", tz="America/New_York").tz_convert("UTC").timestamp() * 1000)
+            return make_response({"results": [{"t": ts, "c": 115}]})
+        return make_response({}, 404)
+
+    monkeypatch.setattr(pf.yf, "download", fake_yfinance_download)
+    monkeypatch.setattr("requests.get", fake_polygon_window)
+
+    prices = pf.get_polygon_prices(["AAPL"], "2020-10-13", "2025-10-15")
+
+    assert calls == [("AAPL", "2020-10-13", "2020-10-15")]
+    assert list(prices.index[:3]) == [
+        pd.Timestamp("2020-10-13"),
+        pd.Timestamp("2020-10-14"),
+        pd.Timestamp("2020-10-15"),
+    ]
+    assert list(map(float, prices["AAPL"].iloc[:3].values)) == [50.0, 80.0, 81.0]
+    assert float(prices["AAPL"].iloc[-1]) == 115.0
+
+
+def test_yfinance_prefix_cache_reused(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    yf_cache_dir = tmp_path / "cache" / ".cache" / "yfinance" / "history"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    yf_cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(pf, "YFINANCE_HISTORY_CACHE_DIR", yf_cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 10:00:00")
+
+    download_calls = []
+
+    def fake_yfinance_download(symbol, **kwargs):
+        download_calls.append((symbol, kwargs["start"], kwargs["end"]))
+        return pd.DataFrame(
+            {
+                "Close": [50.0, 80.0],
+                "Stock Splits": [0.0, 0.0],
+            },
+            index=pd.to_datetime(["2020-10-13", "2020-10-14"]),
+        )
+
+    def fake_polygon_window(url, *args, **kwargs):
+        if "/range/1/day/" in url:
+            results = [
+                {"t": int(pd.Timestamp("2020-10-15", tz="America/New_York").tz_convert("UTC").timestamp() * 1000), "c": 81},
+                {"t": int(pd.Timestamp("2025-10-14", tz="America/New_York").tz_convert("UTC").timestamp() * 1000), "c": 103},
+            ]
+            return make_response({"results": results})
+        if "/range/1/minute/" in url:
+            ts = int(pd.Timestamp("2025-10-15 10:00:00", tz="America/New_York").tz_convert("UTC").timestamp() * 1000)
+            return make_response({"results": [{"t": ts, "c": 115}]})
+        return make_response({}, 404)
+
+    monkeypatch.setattr(pf.yf, "download", fake_yfinance_download)
+    monkeypatch.setattr("requests.get", fake_polygon_window)
+
+    pf.get_polygon_prices(["AAPL"], "2020-10-13", "2025-10-15")
+    pf.get_polygon_prices(["AAPL"], "2020-10-13", "2025-10-15")
+
+    assert download_calls == [("AAPL", "2020-10-13", "2020-10-15")]
