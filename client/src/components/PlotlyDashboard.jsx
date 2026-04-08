@@ -1,4 +1,4 @@
-import React, { useEffect, useState, memo, useMemo } from "react";
+import React, { useEffect, useState, memo, useMemo, useRef } from "react";
 import {
     Button,
     CircularProgress,
@@ -7,6 +7,7 @@ import {
     Divider,
     Box,
 } from "@mui/material";
+import Papa from "papaparse";
 import { useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
 
@@ -19,6 +20,161 @@ async function getPlotly() {
     }
     return PlotlyModule;
 }
+
+const toNum = (v) => {
+    if (v == null) return NaN;
+    const s = String(v).replace(/[,$%]/g, "").trim();
+    const n = Number(s);
+    return isNaN(n) ? NaN : n;
+};
+
+const nyDateString = () => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
+const upsertSeriesPoint = (series, point) => {
+    if (!series?.length) return point ? [point] : [];
+    const next = series.slice();
+    if (next[next.length - 1]?.t === point.t) {
+        next[next.length - 1] = point;
+    } else {
+        next.push(point);
+    }
+    return next;
+};
+
+const withLiveEquity = (equitySeries, liveReturn, asOfDate) => {
+    if (!equitySeries?.length || liveReturn == null) return equitySeries;
+    const next = equitySeries.slice();
+    const baseIdx = next[next.length - 1]?.t === asOfDate ? next.length - 2 : next.length - 1;
+    const basePoint = next[Math.max(baseIdx, 0)];
+    if (!basePoint?.v) return equitySeries;
+
+    const livePoint = {
+        t: asOfDate,
+        v: basePoint.v * (1 + liveReturn),
+    };
+    return upsertSeriesPoint(next, livePoint);
+};
+
+const withLiveCompoundedReturn = (series, liveReturn, asOfDate) => {
+    if (!series?.length || liveReturn == null) return series;
+    const next = series.slice();
+    const baseIdx = next[next.length - 1]?.t === asOfDate ? next.length - 2 : next.length - 1;
+    const basePoint = next[Math.max(baseIdx, 0)];
+    if (basePoint?.v == null) return series;
+
+    const livePoint = {
+        t: asOfDate,
+        v: (1 + basePoint.v) * (1 + liveReturn) - 1,
+    };
+    return upsertSeriesPoint(next, livePoint);
+};
+
+const clampForMultiple = (value) => {
+    if (value == null) return value;
+    if (value < 0 && value > -0.001) return -0.001;
+    if (value >= 0 && value < 0.001) return 0.001;
+    return value;
+};
+
+const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
+    if (!weightsSeries?.length || !liveInputs?.holdings?.length) return weightsSeries;
+
+    const liveValueByTicker = {};
+    let totalValue = 0;
+
+    for (const holding of liveInputs.holdings) {
+        const quote = quotes[holding.ticker];
+        const prevClose = toNum(quote?.prev_close);
+        const price = toNum(quote?.price);
+        const livePrice = isNaN(price) ? prevClose : price;
+        if (isNaN(livePrice) || livePrice <= 0) continue;
+
+        const liveValue = holding.quantity * livePrice;
+        liveValueByTicker[holding.ticker] = liveValue;
+        totalValue += liveValue;
+    }
+
+    if (totalValue <= 0) return weightsSeries;
+
+    return weightsSeries.map((series) => ({
+        ...series,
+        points: upsertSeriesPoint(series.points, {
+            t: asOfDate,
+            v: (liveValueByTicker[series.name] || 0) / totalValue,
+        }),
+    }));
+};
+
+const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
+    if (!payload || !liveReturns?.asOfDate) return payload;
+
+    const next = {
+        ...payload,
+        portfolio: { ...payload.portfolio },
+        benchmark: { ...payload.benchmark },
+        spread: { ...payload.spread },
+        multiple: { ...payload.multiple },
+    };
+
+    if (liveReturns.portfolioReturn != null) {
+        next.portfolio.daily = upsertSeriesPoint(payload.portfolio.daily, {
+            t: liveReturns.asOfDate,
+            v: liveReturns.portfolioReturn,
+        });
+        next.portfolio.equity = withLiveEquity(
+            payload.portfolio.equity,
+            liveReturns.portfolioReturn,
+            liveReturns.asOfDate
+        );
+    }
+
+    if (liveReturns.benchmarkReturn != null) {
+        next.benchmark.daily = upsertSeriesPoint(payload.benchmark.daily, {
+            t: liveReturns.asOfDate,
+            v: liveReturns.benchmarkReturn,
+        });
+        next.benchmark.equity = withLiveEquity(
+            payload.benchmark.equity,
+            liveReturns.benchmarkReturn,
+            liveReturns.asOfDate
+        );
+    }
+
+    if (liveReturns.portfolioReturn != null && liveReturns.benchmarkReturn != null) {
+        const liveSpread = liveReturns.portfolioReturn - liveReturns.benchmarkReturn;
+        next.spread.daily = upsertSeriesPoint(payload.spread.daily, {
+            t: liveReturns.asOfDate,
+            v: liveSpread,
+        });
+        next.spread.cumulative = withLiveCompoundedReturn(
+            payload.spread.cumulative,
+            liveSpread,
+            liveReturns.asOfDate
+        );
+        next.multiple.daily = upsertSeriesPoint(payload.multiple.daily, {
+            t: liveReturns.asOfDate,
+            v: clampForMultiple(liveReturns.portfolioReturn) / clampForMultiple(liveReturns.benchmarkReturn),
+        });
+    }
+
+    next.weights = withLiveWeights(
+        payload.weights,
+        liveInputs,
+        quotes,
+        liveReturns.asOfDate
+    );
+
+    return next;
+};
 
 // ✅ Memoized performance table with scoped styles (beats MUI overrides)
 const PerformanceTable = memo(({ tableData, theme }) => (
@@ -155,11 +311,16 @@ const PerformanceTable = memo(({ tableData, theme }) => (
     </Box>
 ));
 
-export default function PlotlyDashboard({ account }) {
+export default function PlotlyDashboard({ account, onHeaderTextChange }) {
     const theme = useTheme();
     const [data, setData] = useState(null);
     const [range, setRange] = useState("all");
     const [Plotly, setPlotly] = useState(null);
+    const [liveStatus, setLiveStatus] = useState("off");
+    const [liveMessage, setLiveMessage] = useState("");
+    const [liveInputs, setLiveInputs] = useState(null);
+    const [liveReturns, setLiveReturns] = useState(null);
+    const quotesRef = useRef({});
 
     // ✅ stable refs
     const charts = useMemo(
@@ -190,6 +351,11 @@ export default function PlotlyDashboard({ account }) {
     useEffect(() => {
         if (!account?.report) return;
         let cancelled = false;
+        quotesRef.current = {};
+        setLiveInputs(null);
+        setLiveReturns(null);
+        setLiveStatus("off");
+        setLiveMessage("");
 
         const url = account.report.replace(".html", "_interactive.json");
         fetch(url)
@@ -206,6 +372,127 @@ export default function PlotlyDashboard({ account }) {
             });
         };
     }, [account, Plotly, charts]);
+
+    useEffect(() => {
+        if (!account?.weights || !data) return;
+        let cancelled = false;
+
+        fetch(account.weights)
+            .then((r) => r.text())
+            .then((text) => {
+                const parsed = Papa.parse(text, { header: true }).data;
+                const clean = parsed.filter((row) => row && Object.values(row).some((v) => v?.trim()));
+                if (!clean.length || cancelled) return;
+
+                const holdings = clean
+                    .map((row) => ({
+                        ticker: row.Ticker?.trim(),
+                        quantity: toNum(row._Quantity),
+                    }))
+                    .filter((row) => row.ticker && !isNaN(row.quantity) && row.quantity > 0);
+
+                if (!holdings.length) return;
+
+                const benchmarkTicker = data.benchmark?.ticker || "SPY";
+                const tickers = [...new Set([...holdings.map((row) => row.ticker), benchmarkTicker])];
+
+                if (!cancelled) {
+                    setLiveInputs({ holdings, benchmarkTicker, tickers });
+                    setLiveStatus("connecting");
+                    setLiveMessage("Live prices: connecting");
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setLiveStatus("off");
+                    setLiveMessage("");
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [account?.weights, data]);
+
+    useEffect(() => {
+        if (!liveInputs?.tickers?.length) return;
+
+        const computeLiveReturns = () => {
+            let prevCloseValue = 0;
+            let liveValue = 0;
+
+            for (const holding of liveInputs.holdings) {
+                const quote = quotesRef.current[holding.ticker];
+                const prevClose = toNum(quote?.prev_close);
+                const price = toNum(quote?.price);
+                if (isNaN(prevClose) || prevClose <= 0) continue;
+
+                prevCloseValue += holding.quantity * prevClose;
+                liveValue += holding.quantity * (isNaN(price) ? prevClose : price);
+            }
+
+            const benchmarkQuote = quotesRef.current[liveInputs.benchmarkTicker];
+            const benchmarkPrevClose = toNum(benchmarkQuote?.prev_close);
+            const benchmarkPrice = toNum(benchmarkQuote?.price);
+            const benchmarkLivePrice = isNaN(benchmarkPrice) ? benchmarkPrevClose : benchmarkPrice;
+
+            setLiveReturns({
+                asOfDate: nyDateString(),
+                portfolioReturn:
+                    prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null,
+                benchmarkReturn:
+                    !isNaN(benchmarkPrevClose) && benchmarkPrevClose > 0 && !isNaN(benchmarkLivePrice)
+                        ? benchmarkLivePrice / benchmarkPrevClose - 1
+                        : null,
+            });
+        };
+
+        const eventSource = new EventSource(
+            `/api/live/stocks/stream?tickers=${encodeURIComponent(liveInputs.tickers.join(","))}`
+        );
+
+        eventSource.onmessage = (event) => {
+            const payload = JSON.parse(event.data);
+
+            if (payload.type === "status") {
+                setLiveMessage(payload.message || "");
+                if (payload.transport === "stream") {
+                    setLiveStatus("stream");
+                } else if (payload.transport === "poll") {
+                    setLiveStatus("poll");
+                } else {
+                    setLiveStatus("off");
+                }
+                return;
+            }
+
+            if (!payload.quotes) return;
+
+            for (const [ticker, quote] of Object.entries(payload.quotes)) {
+                quotesRef.current[ticker] = {
+                    ...quotesRef.current[ticker],
+                    ...quote,
+                };
+            }
+
+            if (payload.transport === "stream") {
+                setLiveStatus("stream");
+            } else if (payload.transport === "poll") {
+                setLiveStatus("poll");
+            }
+
+            computeLiveReturns();
+        };
+
+        eventSource.onerror = () => {
+            setLiveStatus((prev) => (prev === "poll" ? prev : "reconnecting"));
+            setLiveMessage((prev) => (prev.includes("polling") ? prev : "Live prices: reconnecting"));
+        };
+
+        return () => {
+            eventSource.close();
+        };
+    }, [liveInputs]);
 
     // ✅ MINIMAL CHANGE: resize Plotly charts on window size changes
     useEffect(() => {
@@ -228,6 +515,28 @@ export default function PlotlyDashboard({ account }) {
         };
     }, [Plotly, charts]);
 
+    const displayData = useMemo(
+        () => withLivePerformance(data, liveReturns, liveInputs, quotesRef.current),
+        [data, liveReturns, liveInputs]
+    );
+    const headerText =
+        liveInputs?.tickers?.length > 0
+            ? liveMessage ||
+                (liveStatus === "reconnecting"
+                    ? "Live prices: reconnecting"
+                    : liveStatus === "connecting"
+                        ? "Live prices: connecting"
+                        : "")
+            : "";
+
+    useEffect(() => {
+        if (!onHeaderTextChange) return undefined;
+        onHeaderTextChange(headerText);
+        return () => {
+            onHeaderTextChange("");
+        };
+    }, [headerText, onHeaderTextChange]);
+
     const dateMinusDays = (d, n) => {
         const dt = new Date(d);
         dt.setDate(dt.getDate() - n);
@@ -244,14 +553,9 @@ export default function PlotlyDashboard({ account }) {
 
     const rangeToDays = (r) => ({ "1m": 30, "3m": 90, "6m": 180, "1y": 365 }[r] || 0);
 
-    // 🎨 Build charts once Plotly + data ready
-    useEffect(() => {
-        if (!data || !Plotly) return;
-
-        const payload = data;
+    const buildChartSpecs = (payload) => {
         const arrX = (p) => p.map((v) => v.t);
         const arrY = (p) => p.map((v) => v.v);
-
         const baseLayout = {
             paper_bgcolor: theme.palette.background.paper,
             plot_bgcolor: theme.palette.background.paper,
@@ -262,121 +566,20 @@ export default function PlotlyDashboard({ account }) {
             legend: { orientation: "h", xanchor: "center", x: 0.5 },
             margin: { l: 48, r: 16, t: 24, b: 48 },
             xaxis: { rangeslider: { visible: true }, automargin: true },
+            uirevision: "dashboard",
         };
-
-        const makePlot = (ref, traces, extraLayout) => {
-            if (!ref.current) return;
-            Plotly.newPlot(
-                ref.current,
-                traces,
-                { ...baseLayout, ...extraLayout },
-                { displayModeBar: false }
-            );
-        };
-
-        // --- Cumulative Performance (percent-based)
-        makePlot(
-            charts.cum,
-            [
-                {
-                    name: "Portfolio",
-                    type: "scatter",
-                    mode: "lines",
-                    x: arrX(payload.portfolio.equity),
-                    y: arrY(payload.portfolio.equity).map((v) => v - 1),
-                },
-                {
-                    name: "Benchmark",
-                    type: "scatter",
-                    mode: "lines",
-                    x: arrX(payload.benchmark.equity),
-                    y: arrY(payload.benchmark.equity).map((v) => v - 1),
-                },
-            ],
-            { yaxis: { tickformat: "+.1%" } }
-        );
-
-        // --- Daily Returns
-        makePlot(
-            charts.daily,
-            [
-                {
-                    name: "Portfolio",
-                    type: "bar",
-                    x: arrX(payload.portfolio.daily),
-                    y: arrY(payload.portfolio.daily),
-                },
-                {
-                    name: "Benchmark",
-                    type: "bar",
-                    x: arrX(payload.benchmark.daily),
-                    y: arrY(payload.benchmark.daily),
-                },
-            ],
-            { barmode: "group", yaxis: { tickformat: "+.2%" } }
-        );
-
-        // --- Daily Spread
-        makePlot(
-            charts.spreadDaily,
-            [
-                {
-                    name: "Excess Return",
-                    type: "bar",
-                    x: arrX(payload.spread.daily),
-                    y: arrY(payload.spread.daily),
-                    marker: {
-                        color: payload.spread.daily.map((p) => (p.v >= 0 ? "#3ac569" : "#e74c3c")),
-                    },
-                },
-            ],
-            { yaxis: { tickformat: "+.2%", title: "Excess Return" } }
-        );
 
         const multipleDaily = payload.multiple.daily;
         const portfolioDailyByDate = Object.fromEntries(
             payload.portfolio.daily.map((point) => [point.t, point.v])
         );
 
-        // --- Daily Return Multiple vs Market
-        makePlot(
-            charts.multipleDaily,
-            [
-                {
-                    name: "Return Multiple",
-                    type: "bar",
-                    x: arrX(multipleDaily),
-                    y: arrY(multipleDaily),
-                    marker: {
-                        color: multipleDaily.map((p) => (portfolioDailyByDate[p.t] > 0 ? "#3ac569" : "#e74c3c")),
-                    },
-                },
-            ],
-            { yaxis: { tickformat: "+.2f", title: "Return Multiple" } }
-        );
-
-        // --- Cumulative Spread
-        makePlot(
-            charts.spreadCum,
-            [
-                {
-                    name: "Cumulative Alpha",
-                    type: "scatter",
-                    mode: "lines",
-                    x: arrX(payload.spread.cumulative),
-                    y: arrY(payload.spread.cumulative),
-                },
-            ],
-            { yaxis: { tickformat: "+.2%" } }
-        );
-
-        // --- Holdings Over Time
-        const traces = [];
+        const weightsTraces = [];
         for (const s of payload.weights) {
             const x = s.points.map((p) => p.t);
             const y = s.points.map((p) => p.v);
 
-            traces.push({
+            weightsTraces.push({
                 name: s.name,
                 type: "scatter",
                 mode: "lines",
@@ -396,7 +599,7 @@ export default function PlotlyDashboard({ account }) {
                 }
             }
 
-            traces.push({
+            weightsTraces.push({
                 name: s.name,
                 type: "scatter",
                 mode: "markers",
@@ -409,9 +612,99 @@ export default function PlotlyDashboard({ account }) {
             });
         }
 
-        makePlot(charts.weights, traces, {
-            yaxis: { tickformat: ".0%", rangemode: "tozero" },
-            hovermode: "x",
+        return {
+            cum: {
+                traces: [
+                    {
+                        name: "Portfolio",
+                        type: "scatter",
+                        mode: "lines",
+                        x: arrX(payload.portfolio.equity),
+                        y: arrY(payload.portfolio.equity).map((v) => v - 1),
+                    },
+                    {
+                        name: "Benchmark",
+                        type: "scatter",
+                        mode: "lines",
+                        x: arrX(payload.benchmark.equity),
+                        y: arrY(payload.benchmark.equity).map((v) => v - 1),
+                    },
+                ],
+                layout: { ...baseLayout, yaxis: { tickformat: "+.1%" } },
+            },
+            daily: {
+                traces: [
+                    {
+                        name: "Portfolio",
+                        type: "bar",
+                        x: arrX(payload.portfolio.daily),
+                        y: arrY(payload.portfolio.daily),
+                    },
+                    {
+                        name: "Benchmark",
+                        type: "bar",
+                        x: arrX(payload.benchmark.daily),
+                        y: arrY(payload.benchmark.daily),
+                    },
+                ],
+                layout: { ...baseLayout, barmode: "group", yaxis: { tickformat: "+.2%" } },
+            },
+            spreadDaily: {
+                traces: [
+                    {
+                        name: "Excess Return",
+                        type: "bar",
+                        x: arrX(payload.spread.daily),
+                        y: arrY(payload.spread.daily),
+                        marker: {
+                            color: payload.spread.daily.map((p) => (p.v >= 0 ? "#3ac569" : "#e74c3c")),
+                        },
+                    },
+                ],
+                layout: { ...baseLayout, yaxis: { tickformat: "+.2%", title: "Excess Return" } },
+            },
+            multipleDaily: {
+                traces: [
+                    {
+                        name: "Return Multiple",
+                        type: "bar",
+                        x: arrX(multipleDaily),
+                        y: arrY(multipleDaily),
+                        marker: {
+                            color: multipleDaily.map((p) => (portfolioDailyByDate[p.t] > 0 ? "#3ac569" : "#e74c3c")),
+                        },
+                    },
+                ],
+                layout: { ...baseLayout, yaxis: { tickformat: "+.2f", title: "Return Multiple" } },
+            },
+            spreadCum: {
+                traces: [
+                    {
+                        name: "Cumulative Alpha",
+                        type: "scatter",
+                        mode: "lines",
+                        x: arrX(payload.spread.cumulative),
+                        y: arrY(payload.spread.cumulative),
+                    },
+                ],
+                layout: { ...baseLayout, yaxis: { tickformat: "+.2%" } },
+            },
+            weights: {
+                traces: weightsTraces,
+                layout: { ...baseLayout, yaxis: { tickformat: ".0%", rangemode: "tozero" }, hovermode: "x" },
+            },
+        };
+    };
+
+    // 🎨 Build charts once Plotly + data ready
+    useEffect(() => {
+        if (!data || !Plotly) return;
+
+        const specs = buildChartSpecs(data);
+        Object.entries(specs).forEach(([key, spec]) => {
+            const ref = charts[key];
+            if (!ref?.current) return;
+            Plotly.newPlot(ref.current, spec.traces, spec.layout, { displayModeBar: false });
         });
 
         // After initial render, do a resize pass once layout has settled
@@ -428,11 +721,22 @@ export default function PlotlyDashboard({ account }) {
         };
     }, [data, Plotly, theme, charts]);
 
+    useEffect(() => {
+        if (!liveReturns || !displayData || !Plotly) return;
+
+        const specs = buildChartSpecs(displayData);
+        Object.entries(specs).forEach(([key, spec]) => {
+            const ref = charts[key];
+            if (!ref?.current) return;
+            Plotly.react(ref.current, spec.traces, spec.layout, { displayModeBar: false });
+        });
+    }, [displayData, liveReturns, Plotly, theme, charts]);
+
     const handleSetRange = (r) => {
         setRange(r);
-        if (!data || !Plotly) return;
+        if (!displayData || !Plotly) return;
         const ids = Object.values(charts).map((ref) => ref.current);
-        const end = lastDate(data);
+        const end = lastDate(displayData);
         if (r === "all" || !end) {
             ids.forEach((el) => el && Plotly.relayout(el, { "xaxis.autorange": true }));
         } else {
@@ -541,7 +845,7 @@ export default function PlotlyDashboard({ account }) {
     };
 
     // Build timeframes with YTD inserted in the “correct” position
-    const eq = data.portfolio.equity || [];
+    const eq = displayData.portfolio.equity || [];
     const availableDays = (() => {
         if (eq.length < 2) return 0;
         const start = new Date(eq[0].t);
@@ -596,18 +900,18 @@ export default function PlotlyDashboard({ account }) {
             let p = null, b = null;
 
             if (label === "1D") {
-                p = oneDayReturn(data.portfolio.daily, data.portfolio.equity);
-                b = oneDayReturn(data.benchmark.daily, data.benchmark.equity);
+                p = oneDayReturn(displayData.portfolio.daily, displayData.portfolio.equity);
+                b = oneDayReturn(displayData.benchmark.daily, displayData.benchmark.equity);
             } else if (label === "YTD") {
-                p = ytdReturn(data.portfolio.equity);
-                b = ytdReturn(data.benchmark.equity);
+                p = ytdReturn(displayData.portfolio.equity);
+                b = ytdReturn(displayData.benchmark.equity);
             } else if (label === "ALL") {
-                p = allTimeReturn(data.portfolio.equity);
-                b = allTimeReturn(data.benchmark.equity);
+                p = allTimeReturn(displayData.portfolio.equity);
+                b = allTimeReturn(displayData.benchmark.equity);
             } else if (typeof span === "number") {
                 if (availableDays >= Math.min(span, availableDays)) {
-                    p = periodReturn(data.portfolio.equity, span);
-                    b = periodReturn(data.benchmark.equity, span);
+                    p = periodReturn(displayData.portfolio.equity, span);
+                    b = periodReturn(displayData.benchmark.equity, span);
                 }
             }
 

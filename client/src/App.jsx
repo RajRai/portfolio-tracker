@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     AppBar,
     Tabs,
@@ -15,6 +15,7 @@ import {
     MenuItem,
 } from "@mui/material";
 import Menu from "@mui/material/Menu";
+import Papa from "papaparse";
 import CheckIcon from "@mui/icons-material/Check";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -34,11 +35,30 @@ function umamiTrack(eventName, data) {
     }
 }
 
+const toNum = (v) => {
+    if (v == null) return NaN;
+    const s = String(v).replace(/[,$%]/g, "").trim();
+    const n = Number(s);
+    return isNaN(n) ? NaN : n;
+};
+
+const parseLiveHoldings = (csvText) =>
+    Papa.parse(csvText, { header: true }).data
+        .filter((row) => row && Object.values(row).some((v) => v?.trim()))
+        .map((row) => ({
+            ticker: row.Ticker?.trim(),
+            quantity: toNum(row._Quantity),
+        }))
+        .filter((row) => row.ticker && !isNaN(row.quantity) && row.quantity > 0);
+
 export default function App() {
     const [accounts, setAccounts] = useState([]);
+    const [liveConfigs, setLiveConfigs] = useState([]);
+    const [accountDailyReturns, setAccountDailyReturns] = useState({});
     const [active, setActive] = useState(0);
     const [loading, setLoading] = useState(true);
     const theme = useTheme();
+    const quotesRef = useRef({});
 
     useEffect(() => {
         fetch("/api/accounts")
@@ -48,17 +68,41 @@ export default function App() {
                     data.map(async (acc) => {
                         try {
                             const url = acc.report?.replace(".html", "_interactive.json");
-                            const j = url ? await (await fetch(url)).json() : null;
+                            const [j, weightsText] = await Promise.all([
+                                url ? (await fetch(url)).json() : null,
+                                acc.weights ? await (await fetch(acc.weights)).text() : "",
+                            ]);
                             const daily = j?.portfolio?.daily;
                             const last = Array.isArray(daily) && daily.length ? daily[daily.length - 1].v : null;
-                            return { ...acc, dailyReturn: last };
+                            return {
+                                ...acc,
+                                dailyReturn: last,
+                                liveHoldings: parseLiveHoldings(weightsText),
+                            };
                         } catch {
-                            return { ...acc, dailyReturn: null };
+                            return {
+                                ...acc,
+                                dailyReturn: null,
+                                liveHoldings: [],
+                            };
                         }
                     })
                 );
 
-                setAccounts(enriched);
+                setAccounts(
+                    enriched.map(({ liveHoldings, ...acc }) => acc)
+                );
+                setLiveConfigs(
+                    enriched.map(({ id, liveHoldings }) => ({
+                        id,
+                        liveHoldings,
+                    }))
+                );
+                setAccountDailyReturns(
+                    Object.fromEntries(
+                        enriched.map(({ id, dailyReturn }) => [id, dailyReturn])
+                    )
+                );
                 setLoading(false);
 
                 umamiTrack("accounts_loaded", {
@@ -70,6 +114,77 @@ export default function App() {
                 umamiTrack("accounts_load_failed", {});
             });
     }, []);
+
+    useEffect(() => {
+        if (!liveConfigs.length) return;
+
+        const configById = Object.fromEntries(
+            liveConfigs.map((config) => [config.id, config])
+        );
+        const tickers = [...new Set(
+            liveConfigs.flatMap((config) => config.liveHoldings.map((holding) => holding.ticker))
+        )];
+
+        if (!tickers.length) return;
+
+        quotesRef.current = {};
+
+        const updateAccountReturns = () => {
+            setAccountDailyReturns((prev) => {
+                let changed = false;
+                const next = { ...prev };
+
+                for (const [accountId, config] of Object.entries(configById)) {
+                    if (!config?.liveHoldings?.length) continue;
+
+                    let prevCloseValue = 0;
+                    let liveValue = 0;
+
+                    for (const holding of config.liveHoldings) {
+                        const quote = quotesRef.current[holding.ticker];
+                        const prevClose = toNum(quote?.prev_close);
+                        const price = toNum(quote?.price);
+                        if (isNaN(prevClose) || prevClose <= 0) continue;
+
+                        prevCloseValue += holding.quantity * prevClose;
+                        liveValue += holding.quantity * (isNaN(price) ? prevClose : price);
+                    }
+
+                    if (prevCloseValue <= 0) continue;
+
+                    const nextDailyReturn = liveValue / prevCloseValue - 1;
+                    if (next[accountId] !== nextDailyReturn) {
+                        next[accountId] = nextDailyReturn;
+                        changed = true;
+                    }
+                }
+
+                return changed ? next : prev;
+            });
+        };
+
+        const eventSource = new EventSource(
+            `/api/live/stocks/stream?tickers=${encodeURIComponent(tickers.join(","))}`
+        );
+
+        eventSource.onmessage = (event) => {
+            const payload = JSON.parse(event.data);
+            if (!payload.quotes) return;
+
+            for (const [ticker, quote] of Object.entries(payload.quotes)) {
+                quotesRef.current[ticker] = {
+                    ...quotesRef.current[ticker],
+                    ...quote,
+                };
+            }
+
+            updateAccountReturns();
+        };
+
+        return () => {
+            eventSource.close();
+        };
+    }, [liveConfigs]);
 
     // Track account switching
     useEffect(() => {
@@ -137,7 +252,7 @@ export default function App() {
                         }}
                     >
                         {accounts.map((acc) => {
-                            const val = acc.dailyReturn;
+                            const val = accountDailyReturns[acc.id];
                             const color =
                                 val == null
                                     ? theme.palette.text.secondary

@@ -1,6 +1,6 @@
 // src/components/AccountTabs.jsx
-import React, { useEffect, useState } from "react";
-import { Tabs, Tab, Box } from "@mui/material";
+import React, { memo, useEffect, useState } from "react";
+import { Tabs, Tab, Box, Typography } from "@mui/material";
 import CSVTable from "./CSVTable.jsx";
 import PlotlyDashboard from "./PlotlyDashboard.jsx";
 import PortfolioAbout from "./PortfolioAbout.jsx";
@@ -15,13 +15,15 @@ function umamiTrack(eventName, data) {
     }
 }
 
-export default function AccountTabs({ account }) {
+function AccountTabs({ account }) {
     const [tab, setTab] = useState("analytics");
+    const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
 
     // When account changes, reset inner tab + track
     useEffect(() => {
         if (!account) return;
         setTab("analytics");
+        setAnalyticsHeaderText("");
         umamiTrack("account_view_loaded", {
             account_id: account.id,
             account_name: account.name,
@@ -72,11 +74,38 @@ export default function AccountTabs({ account }) {
 
             {/* ===== Scrollable Content Area ===== */}
             <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                <PortfolioAbout about={account.about} />
-                {tab === "analytics" && <PlotlyDashboard key={account.id} account={account} />}
-                {tab === "holdings" && <CSVTable src={account.weights} title="Current Portfolio Holdings" />}
+                <PortfolioAbout
+                    about={account.about}
+                    leftSlot={
+                        tab === "analytics" && analyticsHeaderText ? (
+                            <Typography
+                                variant="caption"
+                                sx={{
+                                    display: "block",
+                                    color: "text.secondary",
+                                    textAlign: "left",
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                }}
+                            >
+                                {analyticsHeaderText}
+                            </Typography>
+                        ) : null
+                    }
+                />
+                {tab === "analytics" && (
+                    <PlotlyDashboard
+                        key={account.id}
+                        account={account}
+                        onHeaderTextChange={setAnalyticsHeaderText}
+                    />
+                )}
+                {tab === "holdings" && <CSVTable src={account.weights} title="Current Portfolio Holdings" live />}
                 {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" />}
             </Box>
         </Box>
     );
 }
+
+export default memo(AccountTabs);

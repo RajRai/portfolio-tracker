@@ -337,6 +337,7 @@ def main():
                 "equity": _series_to_pairs(port_eq),
             },
             "benchmark": {
+                "ticker": BENCHMARK,
                 "daily": _series_to_pairs(bench_ret),
                 "equity": _series_to_pairs(bench_eq),
             },
@@ -377,6 +378,7 @@ def main():
                     current_lot_basis.loc[sym] += lot["qty"] * float(sym_prices.loc[lot_date])
 
         current_lot_value_df = current_lot_qty_df * prices.reindex(current_lot_qty_df.index)
+        current_quantities = current_lot_qty_df.loc[latest_date].reindex(current_weights.index)
         current_values = current_lot_value_df.loc[latest_date].reindex(current_weights.index)
         today_gl = current_lot_value_df.pct_change().loc[latest_date].reindex(current_weights.index)
         total_gl = current_values.div(current_lot_basis.reindex(current_weights.index).replace(0, np.nan)) - 1.0
@@ -393,6 +395,12 @@ def main():
         ).map(lambda x: f"{x:.2f}%")
         current_weights_df["Today G/L"] = current_weights.index.map(today_gl.get).map(_fmt_pct)
         current_weights_df["Total G/L (approx.)"] = current_weights.index.map(total_gl.get).map(_fmt_pct)
+        current_weights_df["_Quantity"] = current_weights.index.map(current_quantities.get).map(
+            lambda x: "" if pd.isna(x) else f"{float(x):.10f}"
+        )
+        current_weights_df["_BasisApprox"] = current_weights.index.map(
+            current_lot_basis.reindex(current_weights.index).get
+        ).map(lambda x: "" if pd.isna(x) else f"{float(x):.10f}")
 
         portfolio_value = value_df.sum(axis=1)
         trades_pct = trades.copy()
@@ -478,7 +486,9 @@ def main():
               {trades_table}
             </div>
             """.format(
-                weights_table=current_weights_df.to_html(
+                weights_table=current_weights_df[
+                    [col for col in current_weights_df.columns if not col.startswith("_")]
+                ].to_html(
                     index=False, justify="center", border=0,
                     classes="dataframe", float_format="%.2f"
                 ),

@@ -5,33 +5,48 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 const fallbackText = "No additional portfolio notes are configured for this portfolio yet.";
 const disclaimer = "This is not financial advice. Do your own research.";
 
-export default function PortfolioAbout({ about }) {
+export default function PortfolioAbout({ about, leftSlot = null }) {
     const [open, setOpen] = useState(false);
 
     return (
         <>
-            <Box sx={{ px: { xs: 1.5, sm: 2 }, pt: 1, pb: 0.25, display: "flex", justifyContent: "center" }}>
+            <Box sx={{ px: { xs: 1.5, sm: 2 }, pt: 1, pb: 0.25 }}>
                 <Box
-                    component="button"
-                    type="button"
-                    onClick={() => setOpen(true)}
                     sx={{
-                        display: "inline-flex",
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
                         alignItems: "center",
-                        gap: 0.5,
-                        p: 0,
-                        border: 0,
-                        borderBottom: (theme) => `1px dashed ${theme.palette.action.disabled}`,
-                        background: "transparent",
-                        color: "text.secondary",
-                        font: "inherit",
-                        fontSize: "0.72rem",
-                        opacity: 0.72,
-                        cursor: "pointer",
+                        columnGap: 1,
                     }}
                 >
-                    About this portfolio
-                    <InfoOutlinedIcon sx={{ fontSize: 14 }} />
+                    <Box sx={{ minWidth: 0, justifySelf: "start" }}>
+                        {leftSlot}
+                    </Box>
+                    <Box sx={{ justifySelf: "center" }}>
+                        <Box
+                            component="button"
+                            type="button"
+                            onClick={() => setOpen(true)}
+                            sx={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 0.5,
+                                p: 0,
+                                border: 0,
+                                borderBottom: (theme) => `1px dashed ${theme.palette.action.disabled}`,
+                                background: "transparent",
+                                color: "text.secondary",
+                                font: "inherit",
+                                fontSize: "0.72rem",
+                                opacity: 0.72,
+                                cursor: "pointer",
+                            }}
+                        >
+                            About this portfolio
+                            <InfoOutlinedIcon sx={{ fontSize: 14 }} />
+                        </Box>
+                    </Box>
+                    <Box />
                 </Box>
             </Box>
 
