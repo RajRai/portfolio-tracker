@@ -78,6 +78,44 @@ def _chunked(items: list[str], size: int):
         yield items[i:i + size]
 
 
+def _valid_price(value) -> float | None:
+    price = _to_float(value)
+    if math.isnan(price) or price <= 0:
+        return None
+    return price
+
+
+def _first_valid_price(*values) -> float | None:
+    for value in values:
+        price = _valid_price(value)
+        if price is not None:
+            return price
+    return None
+
+
+def _resolve_live_price(quote: dict) -> float | None:
+    return _first_valid_price(quote.get("price"), quote.get("prev_close"))
+
+
+def _merge_quote(existing: dict | None, incoming: dict | None) -> dict:
+    merged = dict(existing or {})
+    incoming = incoming or {}
+
+    price = _valid_price(incoming.get("price"))
+    if price is not None:
+        merged["price"] = price
+
+    prev_close = _valid_price(incoming.get("prev_close"))
+    if prev_close is not None:
+        merged["prev_close"] = prev_close
+
+    updated = incoming.get("updated")
+    if updated is not None:
+        merged["updated"] = updated
+
+    return merged
+
+
 def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
     api_key = os.environ.get("POLYGON_API_KEY")
     if not api_key or not tickers:
@@ -97,20 +135,23 @@ def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
                 continue
 
             last_trade = item.get("lastTrade") or {}
+            minute = item.get("min") or {}
             day = item.get("day") or {}
             prev_day = item.get("prevDay") or {}
-            price = last_trade.get("p")
-            if price is None:
-                price = day.get("c")
+            price = _first_valid_price(
+                last_trade.get("p"),
+                minute.get("c"),
+                day.get("c"),
+            )
 
-            prev_close = prev_day.get("c")
+            prev_close = _valid_price(prev_day.get("c"))
             if price is None and prev_close is None:
                 continue
 
             out[ticker] = {
                 "price": price,
                 "prev_close": prev_close,
-                "updated": last_trade.get("t") or item.get("updated"),
+                "updated": last_trade.get("t") or minute.get("t") or item.get("updated"),
             }
 
     return out
@@ -227,10 +268,9 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
 
     for holding in holdings:
         quote = quotes.get(holding["ticker"]) or {}
-        prev_close = _to_float(quote.get("prev_close"))
-        price = _to_float(quote.get("price"))
-        live_price = prev_close if math.isnan(price) else price
-        if math.isnan(prev_close) or prev_close <= 0 or math.isnan(live_price):
+        prev_close = _valid_price(quote.get("prev_close"))
+        live_price = _resolve_live_price(quote)
+        if prev_close is None or live_price is None:
             continue
 
         ticker_value = holding["quantity"] * live_price
@@ -239,15 +279,14 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
         live_value_by_ticker[holding["ticker"]] = ticker_value
 
     benchmark_quote = quotes.get(benchmark_ticker) or {}
-    benchmark_prev_close = _to_float(benchmark_quote.get("prev_close"))
-    benchmark_price = _to_float(benchmark_quote.get("price"))
-    benchmark_live_price = benchmark_prev_close if math.isnan(benchmark_price) else benchmark_price
+    benchmark_prev_close = _valid_price(benchmark_quote.get("prev_close"))
+    benchmark_live_price = _resolve_live_price(benchmark_quote)
 
     portfolio_return = None
     benchmark_return = None
     if prev_close_value > 0:
         portfolio_return = live_value / prev_close_value - 1
-    if not math.isnan(benchmark_prev_close) and benchmark_prev_close > 0 and not math.isnan(benchmark_live_price):
+    if benchmark_prev_close is not None and benchmark_live_price is not None:
         benchmark_return = benchmark_live_price / benchmark_prev_close - 1
 
     if portfolio_return is None and benchmark_return is None:
@@ -362,21 +401,20 @@ def _refresh_weights_rows(rows: list[dict], quotes: dict) -> list[dict]:
         quantity = _to_float(row.get("_Quantity"))
         basis_approx = _to_float(row.get("_BasisApprox"))
         quote = quotes.get(ticker) or {}
-        prev_close = _to_float(quote.get("prev_close"))
-        price = _to_float(quote.get("price"))
-        live_price = prev_close if math.isnan(price) else price
+        prev_close = _valid_price(quote.get("prev_close"))
+        live_price = _resolve_live_price(quote)
 
         if total_live_value > 0 and "Portfolio Weight (%)" in next_row and ticker in live_value_by_ticker:
             next_row["Portfolio Weight (%)"] = f"{100 * live_value_by_ticker[ticker] / total_live_value:.2f}%"
 
         if "Today G/L" in next_row:
-            if not math.isnan(prev_close) and prev_close > 0 and not math.isnan(live_price):
+            if prev_close is not None and live_price is not None:
                 next_row["Today G/L"] = _format_pct(live_price / prev_close - 1)
             else:
                 next_row["Today G/L"] = "—"
 
         if "Total G/L (approx.)" in next_row:
-            if not math.isnan(live_price) and not math.isnan(quantity) and not math.isnan(basis_approx) and basis_approx > 0:
+            if live_price is not None and not math.isnan(quantity) and not math.isnan(basis_approx) and basis_approx > 0:
                 next_row["Total G/L (approx.)"] = _format_pct((live_price * quantity) / basis_approx - 1)
             else:
                 next_row["Total G/L (approx.)"] = "—"
@@ -589,10 +627,12 @@ class LiveQuoteHub:
         with self._lock:
             if payload.get("type") == "status":
                 self._status_payload = copy.deepcopy(payload)
+            normalized_quotes = {}
             if payload.get("quotes"):
                 for ticker, quote in payload["quotes"].items():
-                    merged = {**self._quotes.get(ticker, {}), **quote}
+                    merged = _merge_quote(self._quotes.get(ticker), quote)
                     self._quotes[ticker] = merged
+                    normalized_quotes[ticker] = copy.deepcopy(merged)
             clients = [
                 (client["tickers"], client["queue"])
                 for client in self._clients.values()
@@ -603,7 +643,7 @@ class LiveQuoteHub:
                 client_queue.put(copy.deepcopy(payload))
             return
 
-        quotes = payload.get("quotes") or {}
+        quotes = normalized_quotes if payload.get("quotes") else {}
         for tickers, client_queue in clients:
             filtered = {ticker: copy.deepcopy(quote) for ticker, quote in quotes.items() if ticker in tickers}
             if filtered:

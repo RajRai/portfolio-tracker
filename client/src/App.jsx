@@ -145,9 +145,10 @@ export default function App() {
                         const prevClose = toNum(quote?.prev_close);
                         const price = toNum(quote?.price);
                         if (isNaN(prevClose) || prevClose <= 0) continue;
+                        const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
 
                         prevCloseValue += holding.quantity * prevClose;
-                        liveValue += holding.quantity * (isNaN(price) ? prevClose : price);
+                        liveValue += holding.quantity * livePrice;
                     }
 
                     if (prevCloseValue <= 0) continue;

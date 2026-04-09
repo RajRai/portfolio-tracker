@@ -95,7 +95,7 @@ const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
         const quote = quotes[holding.ticker];
         const prevClose = toNum(quote?.prev_close);
         const price = toNum(quote?.price);
-        const livePrice = isNaN(price) ? prevClose : price;
+        const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
         if (isNaN(livePrice) || livePrice <= 0) continue;
 
         const liveValue = holding.quantity * livePrice;
@@ -426,15 +426,17 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
                 const prevClose = toNum(quote?.prev_close);
                 const price = toNum(quote?.price);
                 if (isNaN(prevClose) || prevClose <= 0) continue;
+                const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
 
                 prevCloseValue += holding.quantity * prevClose;
-                liveValue += holding.quantity * (isNaN(price) ? prevClose : price);
+                liveValue += holding.quantity * livePrice;
             }
 
             const benchmarkQuote = quotesRef.current[liveInputs.benchmarkTicker];
             const benchmarkPrevClose = toNum(benchmarkQuote?.prev_close);
             const benchmarkPrice = toNum(benchmarkQuote?.price);
-            const benchmarkLivePrice = isNaN(benchmarkPrice) ? benchmarkPrevClose : benchmarkPrice;
+            const benchmarkLivePrice =
+                !isNaN(benchmarkPrice) && benchmarkPrice > 0 ? benchmarkPrice : benchmarkPrevClose;
 
             setLiveReturns({
                 asOfDate: nyDateString(),

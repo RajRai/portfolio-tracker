@@ -177,14 +177,15 @@ export default function CSVTable({ src, live = false }) {
                     const basisApprox = toNum(row._BasisApprox);
                     const price = toNum(quote.price);
                     const prevClose = toNum(quote.prev_close);
+                    const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
                     const next = {};
 
-                    if (!isNaN(price) && !isNaN(prevClose) && prevClose !== 0) {
-                        next["Today G/L"] = formatPct(price / prevClose - 1);
+                    if (!isNaN(livePrice) && livePrice > 0 && !isNaN(prevClose) && prevClose !== 0) {
+                        next["Today G/L"] = formatPct(livePrice / prevClose - 1);
                     }
 
-                    if (!isNaN(price) && !isNaN(quantity) && !isNaN(basisApprox) && basisApprox !== 0) {
-                        next["Total G/L (approx.)"] = formatPct((price * quantity) / basisApprox - 1);
+                    if (!isNaN(livePrice) && livePrice > 0 && !isNaN(quantity) && !isNaN(basisApprox) && basisApprox !== 0) {
+                        next["Total G/L (approx.)"] = formatPct((livePrice * quantity) / basisApprox - 1);
                     }
 
                     return Object.keys(next).length ? { ...row, ...next } : row;

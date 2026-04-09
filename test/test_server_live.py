@@ -3,6 +3,63 @@ import pytest
 from src import server
 
 
+def test_compute_live_snapshot_falls_back_from_zero_price_to_prev_close(monkeypatch):
+    monkeypatch.setattr(server, "_ny_date_string", lambda: "2026-04-09")
+
+    snapshot = server._compute_live_snapshot(
+        holdings=[{"ticker": "AAA", "quantity": 10.0, "basis_approx": 80.0}],
+        benchmark_ticker="SPY",
+        quotes={
+            "AAA": {"price": 0.0, "prev_close": 10.0},
+            "SPY": {"price": 0.0, "prev_close": 100.0},
+        },
+    )
+
+    assert snapshot is not None
+    assert snapshot["portfolio_return"] == pytest.approx(0.0)
+    assert snapshot["benchmark_return"] == pytest.approx(0.0)
+    assert snapshot["total_live_value"] == pytest.approx(100.0)
+
+
+def test_merge_quote_preserves_existing_valid_price_when_incoming_price_is_blank():
+    merged = server._merge_quote(
+        {"price": 11.5, "prev_close": 10.0, "updated": 100},
+        {"price": None, "prev_close": 10.0, "updated": 101},
+    )
+
+    assert merged["price"] == pytest.approx(11.5)
+    assert merged["prev_close"] == pytest.approx(10.0)
+    assert merged["updated"] == 101
+
+
+def test_fetch_stock_snapshots_ignores_zero_snapshot_price(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tickers": [
+                    {
+                        "ticker": "AAA",
+                        "lastTrade": {},
+                        "min": {"c": 0},
+                        "day": {"c": 0},
+                        "prevDay": {"c": 10},
+                        "updated": 123,
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    quotes = server._fetch_stock_snapshots(["AAA"])
+
+    assert quotes["AAA"]["price"] is None
+    assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
+
+
 def test_apply_live_payload_updates_latest_points(monkeypatch):
     monkeypatch.setattr(server, "_ny_date_string", lambda: "2026-04-08")
 
