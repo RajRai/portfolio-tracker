@@ -14,15 +14,19 @@ export default function PortfolioAbout({ about, leftSlot = null }) {
                 <Box
                     sx={{
                         display: "grid",
-                        gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+                        gridTemplateColumns: { xs: "minmax(0, 1fr) auto", sm: "minmax(0, 1fr) auto minmax(0, 1fr)" },
+                        gridTemplateAreas: {
+                            xs: `"left center"`,
+                            sm: `"left center right"`,
+                        },
                         alignItems: "center",
                         columnGap: 1,
                     }}
                 >
-                    <Box sx={{ minWidth: 0, justifySelf: "start" }}>
+                    <Box sx={{ minWidth: 0, justifySelf: "start", gridArea: "left" }}>
                         {leftSlot}
                     </Box>
-                    <Box sx={{ justifySelf: "center" }}>
+                    <Box sx={{ justifySelf: { xs: "end", sm: "center" }, gridArea: "center" }}>
                         <Box
                             component="button"
                             type="button"
@@ -46,7 +50,7 @@ export default function PortfolioAbout({ about, leftSlot = null }) {
                             <InfoOutlinedIcon sx={{ fontSize: 14 }} />
                         </Box>
                     </Box>
-                    <Box />
+                    <Box sx={{ display: { xs: "none", sm: "block" }, gridArea: "right" }} />
                 </Box>
             </Box>
 
