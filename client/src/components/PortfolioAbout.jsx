@@ -7,6 +7,7 @@ const disclaimer = "This is not financial advice. Do your own research.";
 
 export default function PortfolioAbout({ about, leftSlot = null }) {
     const [open, setOpen] = useState(false);
+    const hasLeftSlot = Boolean(leftSlot);
 
     return (
         <>
@@ -14,19 +15,22 @@ export default function PortfolioAbout({ about, leftSlot = null }) {
                 <Box
                     sx={{
                         display: "grid",
-                        gridTemplateColumns: { xs: "minmax(0, 1fr) auto", sm: "minmax(0, 1fr) auto minmax(0, 1fr)" },
+                        gridTemplateColumns: {
+                            xs: hasLeftSlot ? "minmax(0, 1fr) auto" : "1fr",
+                            sm: "minmax(0, 1fr) auto minmax(0, 1fr)",
+                        },
                         gridTemplateAreas: {
-                            xs: `"left center"`,
+                            xs: hasLeftSlot ? `"left center"` : `"center"`,
                             sm: `"left center right"`,
                         },
                         alignItems: "center",
                         columnGap: 1,
                     }}
                 >
-                    <Box sx={{ minWidth: 0, justifySelf: "start", gridArea: "left" }}>
+                    <Box sx={{ minWidth: 0, justifySelf: "start", gridArea: "left", display: { xs: hasLeftSlot ? "block" : "none", sm: "block" } }}>
                         {leftSlot}
                     </Box>
-                    <Box sx={{ justifySelf: { xs: "end", sm: "center" }, gridArea: "center" }}>
+                    <Box sx={{ justifySelf: { xs: hasLeftSlot ? "end" : "center", sm: "center" }, gridArea: "center" }}>
                         <Box
                             component="button"
                             type="button"

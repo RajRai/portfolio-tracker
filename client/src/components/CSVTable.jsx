@@ -18,7 +18,7 @@ const toNum = (v) => {
 
 const formatPct = (value) => (isNaN(value) ? "—" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`);
 
-export default function CSVTable({ src, live = false }) {
+export default function CSVTable({ src, live = false, onHeaderTextChange }) {
     const [rows, setRows] = useState([]);
     const [columns, setColumns] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -195,13 +195,31 @@ export default function CSVTable({ src, live = false }) {
 
         eventSource.onerror = () => {
             setLiveStatus((prev) => (prev === "poll" ? prev : "reconnecting"));
-            setLiveMessage((prev) => (prev.includes("polling") ? prev : "Live prices: reconnecting"));
+            setLiveMessage((prev) => (prev.includes("updating every") ? prev : "Live prices: reconnecting"));
         };
 
         return () => {
             eventSource.close();
         };
     }, [live, liveTickers]);
+
+    const headerText =
+        liveTickers.length > 0
+            ? liveMessage ||
+                (liveStatus === "reconnecting"
+                    ? "Live prices: reconnecting"
+                    : liveStatus === "connecting"
+                        ? "Live prices: connecting"
+                        : "")
+            : "";
+
+    useEffect(() => {
+        if (!onHeaderTextChange) return undefined;
+        onHeaderTextChange(headerText);
+        return () => {
+            onHeaderTextChange("");
+        };
+    }, [headerText, onHeaderTextChange]);
 
     if (loading)
         return (
@@ -229,25 +247,6 @@ export default function CSVTable({ src, live = false }) {
             }}
             elevation={3}
         >
-            {liveTickers.length > 0 && (
-                <Box
-                    sx={{
-                        px: 2,
-                        py: 1,
-                        borderBottom: (t) => `1px solid ${t.palette.divider}`,
-                        backgroundColor: (t) => t.palette.action.hover,
-                    }}
-                >
-                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                        {liveMessage ||
-                            (liveStatus === "reconnecting"
-                                ? "Live prices: reconnecting"
-                                : liveStatus === "connecting"
-                                    ? "Live prices: connecting"
-                                    : "")}
-                    </Typography>
-                </Box>
-            )}
             <DataGrid
                 rows={rows}
                 columns={columns}

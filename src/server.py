@@ -512,7 +512,7 @@ def _stream_polygon_stock_feed(tickers: list[str], emit, stop_event: threading.E
     emit({
         "type": "status",
         "transport": "poll",
-        "message": f"Live prices: polling every {LIVE_POLL_SECONDS} seconds",
+        "message": f"Live prices: updating every {LIVE_POLL_SECONDS} seconds",
         "detail": str(last_stream_error) if last_stream_error else None,
     })
 

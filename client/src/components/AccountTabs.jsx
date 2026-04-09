@@ -18,12 +18,14 @@ function umamiTrack(eventName, data) {
 function AccountTabs({ account }) {
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
+    const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
 
     // When account changes, reset inner tab + track
     useEffect(() => {
         if (!account) return;
         setTab("analytics");
         setAnalyticsHeaderText("");
+        setHoldingsHeaderText("");
         umamiTrack("account_view_loaded", {
             account_id: account.id,
             account_name: account.name,
@@ -40,6 +42,13 @@ function AccountTabs({ account }) {
             tab,
         });
     }, [tab, account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const headerText =
+        tab === "analytics"
+            ? analyticsHeaderText
+            : tab === "holdings"
+                ? holdingsHeaderText
+                : "";
 
     return (
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -77,7 +86,7 @@ function AccountTabs({ account }) {
                 <PortfolioAbout
                     about={account.about}
                     leftSlot={
-                        tab === "analytics" && analyticsHeaderText ? (
+                        headerText ? (
                             <Typography
                                 variant="caption"
                                 sx={{
@@ -89,7 +98,7 @@ function AccountTabs({ account }) {
                                     textOverflow: "ellipsis",
                                 }}
                             >
-                                {analyticsHeaderText}
+                                {headerText}
                             </Typography>
                         ) : null
                     }
@@ -101,7 +110,14 @@ function AccountTabs({ account }) {
                         onHeaderTextChange={setAnalyticsHeaderText}
                     />
                 )}
-                {tab === "holdings" && <CSVTable src={account.weights} title="Current Portfolio Holdings" live />}
+                {tab === "holdings" && (
+                    <CSVTable
+                        src={account.weights}
+                        title="Current Portfolio Holdings"
+                        live
+                        onHeaderTextChange={setHoldingsHeaderText}
+                    />
+                )}
                 {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" />}
             </Box>
         </Box>

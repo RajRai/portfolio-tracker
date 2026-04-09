@@ -488,7 +488,7 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
 
         eventSource.onerror = () => {
             setLiveStatus((prev) => (prev === "poll" ? prev : "reconnecting"));
-            setLiveMessage((prev) => (prev.includes("polling") ? prev : "Live prices: reconnecting"));
+            setLiveMessage((prev) => (prev.includes("updating every") ? prev : "Live prices: reconnecting"));
         };
 
         return () => {
