@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     AppBar,
     Tabs,
@@ -51,6 +51,10 @@ const parseLiveHoldings = (csvText) =>
         }))
         .filter((row) => row.ticker && !isNaN(row.quantity) && row.quantity > 0);
 
+const POLL_LIVE_MESSAGE = "Live prices: updating every 5 seconds";
+const STREAM_LIVE_MESSAGE = "Live prices: updating live";
+const CONNECTING_LIVE_MESSAGE = "Live prices: connecting";
+
 export default function App() {
     const [accounts, setAccounts] = useState([]);
     const [liveConfigs, setLiveConfigs] = useState([]);
@@ -59,6 +63,30 @@ export default function App() {
     const [loading, setLoading] = useState(true);
     const theme = useTheme();
     const quotesRef = useRef({});
+    const liveStore = useMemo(() => {
+        let snapshot = {
+            status: "off",
+            message: "",
+            quotes: {},
+        };
+        const listeners = new Set();
+
+        const emit = () => {
+            listeners.forEach((listener) => listener());
+        };
+
+        return {
+            getSnapshot: () => snapshot,
+            subscribe: (listener) => {
+                listeners.add(listener);
+                return () => listeners.delete(listener);
+            },
+            publish: (next) => {
+                snapshot = typeof next === "function" ? next(snapshot) : next;
+                emit();
+            },
+        };
+    }, []);
 
     useEffect(() => {
         fetch("/api/accounts")
@@ -78,12 +106,14 @@ export default function App() {
                                 ...acc,
                                 dailyReturn: last,
                                 liveHoldings: parseLiveHoldings(weightsText),
+                                benchmarkTicker: j?.benchmark?.ticker || "SPY",
                             };
                         } catch {
                             return {
                                 ...acc,
                                 dailyReturn: null,
                                 liveHoldings: [],
+                                benchmarkTicker: "SPY",
                             };
                         }
                     })
@@ -93,9 +123,10 @@ export default function App() {
                     enriched.map(({ liveHoldings, ...acc }) => acc)
                 );
                 setLiveConfigs(
-                    enriched.map(({ id, liveHoldings }) => ({
+                    enriched.map(({ id, liveHoldings, benchmarkTicker }) => ({
                         id,
                         liveHoldings,
+                        benchmarkTicker,
                     }))
                 );
                 setAccountDailyReturns(
@@ -122,12 +153,20 @@ export default function App() {
             liveConfigs.map((config) => [config.id, config])
         );
         const tickers = [...new Set(
-            liveConfigs.flatMap((config) => config.liveHoldings.map((holding) => holding.ticker))
+            liveConfigs.flatMap((config) => [
+                ...config.liveHoldings.map((holding) => holding.ticker),
+                config.benchmarkTicker,
+            ])
         )];
 
         if (!tickers.length) return;
 
         quotesRef.current = {};
+        liveStore.publish({
+            status: "connecting",
+            message: CONNECTING_LIVE_MESSAGE,
+            quotes: quotesRef.current,
+        });
 
         const updateAccountReturns = () => {
             setAccountDailyReturns((prev) => {
@@ -170,6 +209,29 @@ export default function App() {
 
         eventSource.onmessage = (event) => {
             const payload = JSON.parse(event.data);
+            if (payload.type === "status") {
+                if (payload.transport === "stream") {
+                    liveStore.publish((prev) => ({
+                        ...prev,
+                        status: "stream",
+                        message: STREAM_LIVE_MESSAGE,
+                    }));
+                } else if (payload.transport === "poll") {
+                    liveStore.publish((prev) => ({
+                        ...prev,
+                        status: "poll",
+                        message: POLL_LIVE_MESSAGE,
+                    }));
+                } else {
+                    liveStore.publish((prev) => ({
+                        ...prev,
+                        status: "off",
+                        message: payload.message || "",
+                    }));
+                }
+                return;
+            }
+
             if (!payload.quotes) return;
 
             for (const [ticker, quote] of Object.entries(payload.quotes)) {
@@ -179,13 +241,44 @@ export default function App() {
                 };
             }
 
+            if (payload.transport === "stream") {
+                liveStore.publish({
+                    status: "stream",
+                    message: STREAM_LIVE_MESSAGE,
+                    quotes: quotesRef.current,
+                });
+            } else if (payload.transport === "poll") {
+                liveStore.publish({
+                    status: "poll",
+                    message: POLL_LIVE_MESSAGE,
+                    quotes: quotesRef.current,
+                });
+            } else {
+                liveStore.publish((prev) => ({
+                    ...prev,
+                    quotes: quotesRef.current,
+                }));
+            }
+
             updateAccountReturns();
+        };
+
+        eventSource.onerror = () => {
+            liveStore.publish((prev) =>
+                prev.status === "poll"
+                    ? prev
+                    : {
+                        ...prev,
+                        status: "reconnecting",
+                        message: "Live prices: reconnecting",
+                    }
+            );
         };
 
         return () => {
             eventSource.close();
         };
-    }, [liveConfigs]);
+    }, [liveConfigs, liveStore]);
 
     // Track account switching
     useEffect(() => {
@@ -370,7 +463,7 @@ export default function App() {
                     bgcolor: theme.palette.background.default,
                 }}
             >
-                <AccountTabs account={accounts[active]} />
+                <AccountTabs account={accounts[active]} liveStore={liveStore} />
             </Box>
         </Box>
     );

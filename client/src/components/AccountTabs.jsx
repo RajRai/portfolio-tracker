@@ -15,7 +15,7 @@ function umamiTrack(eventName, data) {
     }
 }
 
-function AccountTabs({ account }) {
+function AccountTabs({ account, liveStore }) {
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
     const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
@@ -107,6 +107,7 @@ function AccountTabs({ account }) {
                     <PlotlyDashboard
                         key={account.id}
                         account={account}
+                        liveStore={liveStore}
                         onHeaderTextChange={setAnalyticsHeaderText}
                     />
                 )}
@@ -115,6 +116,7 @@ function AccountTabs({ account }) {
                         src={account.weights}
                         title="Current Portfolio Holdings"
                         live
+                        liveStore={liveStore}
                         onHeaderTextChange={setHoldingsHeaderText}
                     />
                 )}

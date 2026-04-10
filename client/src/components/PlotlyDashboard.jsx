@@ -1,4 +1,4 @@
-import React, { useEffect, useState, memo, useMemo, useRef } from "react";
+import React, { useEffect, useState, memo, useMemo, useSyncExternalStore } from "react";
 import {
     Button,
     CircularProgress,
@@ -38,6 +38,8 @@ const nyDateString = () => {
     const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
     return `${values.year}-${values.month}-${values.day}`;
 };
+
+const EMPTY_LIVE_SNAPSHOT = { status: "off", message: "", quotes: {} };
 
 const upsertSeriesPoint = (series, point) => {
     if (!series?.length) return point ? [point] : [];
@@ -311,16 +313,17 @@ const PerformanceTable = memo(({ tableData, theme }) => (
     </Box>
 ));
 
-export default function PlotlyDashboard({ account, onHeaderTextChange }) {
+export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange }) {
     const theme = useTheme();
     const [data, setData] = useState(null);
     const [range, setRange] = useState("all");
     const [Plotly, setPlotly] = useState(null);
-    const [liveStatus, setLiveStatus] = useState("off");
-    const [liveMessage, setLiveMessage] = useState("");
     const [liveInputs, setLiveInputs] = useState(null);
-    const [liveReturns, setLiveReturns] = useState(null);
-    const quotesRef = useRef({});
+    const liveSnapshot = useSyncExternalStore(
+        liveStore?.subscribe || (() => () => {}),
+        liveStore?.getSnapshot || (() => EMPTY_LIVE_SNAPSHOT),
+        liveStore?.getSnapshot || (() => EMPTY_LIVE_SNAPSHOT)
+    );
 
     // ✅ stable refs
     const charts = useMemo(
@@ -351,11 +354,7 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
     useEffect(() => {
         if (!account?.report) return;
         let cancelled = false;
-        quotesRef.current = {};
         setLiveInputs(null);
-        setLiveReturns(null);
-        setLiveStatus("off");
-        setLiveMessage("");
 
         const url = account.report.replace(".html", "_interactive.json");
         fetch(url)
@@ -398,15 +397,10 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
 
                 if (!cancelled) {
                     setLiveInputs({ holdings, benchmarkTicker, tickers });
-                    setLiveStatus("connecting");
-                    setLiveMessage("Live prices: connecting");
                 }
             })
             .catch(() => {
-                if (!cancelled) {
-                    setLiveStatus("off");
-                    setLiveMessage("");
-                }
+                if (!cancelled) setLiveInputs(null);
             });
 
         return () => {
@@ -414,87 +408,39 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
         };
     }, [account?.weights, data]);
 
-    useEffect(() => {
-        if (!liveInputs?.tickers?.length) return;
+    const liveReturns = useMemo(() => {
+        if (!liveInputs?.tickers?.length) return null;
 
-        const computeLiveReturns = () => {
-            let prevCloseValue = 0;
-            let liveValue = 0;
+        let prevCloseValue = 0;
+        let liveValue = 0;
 
-            for (const holding of liveInputs.holdings) {
-                const quote = quotesRef.current[holding.ticker];
-                const prevClose = toNum(quote?.prev_close);
-                const price = toNum(quote?.price);
-                if (isNaN(prevClose) || prevClose <= 0) continue;
-                const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
+        for (const holding of liveInputs.holdings) {
+            const quote = liveSnapshot.quotes?.[holding.ticker];
+            const prevClose = toNum(quote?.prev_close);
+            const price = toNum(quote?.price);
+            if (isNaN(prevClose) || prevClose <= 0) continue;
+            const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
 
-                prevCloseValue += holding.quantity * prevClose;
-                liveValue += holding.quantity * livePrice;
-            }
+            prevCloseValue += holding.quantity * prevClose;
+            liveValue += holding.quantity * livePrice;
+        }
 
-            const benchmarkQuote = quotesRef.current[liveInputs.benchmarkTicker];
-            const benchmarkPrevClose = toNum(benchmarkQuote?.prev_close);
-            const benchmarkPrice = toNum(benchmarkQuote?.price);
-            const benchmarkLivePrice =
-                !isNaN(benchmarkPrice) && benchmarkPrice > 0 ? benchmarkPrice : benchmarkPrevClose;
+        const benchmarkQuote = liveSnapshot.quotes?.[liveInputs.benchmarkTicker];
+        const benchmarkPrevClose = toNum(benchmarkQuote?.prev_close);
+        const benchmarkPrice = toNum(benchmarkQuote?.price);
+        const benchmarkLivePrice =
+            !isNaN(benchmarkPrice) && benchmarkPrice > 0 ? benchmarkPrice : benchmarkPrevClose;
 
-            setLiveReturns({
-                asOfDate: nyDateString(),
-                portfolioReturn:
-                    prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null,
-                benchmarkReturn:
-                    !isNaN(benchmarkPrevClose) && benchmarkPrevClose > 0 && !isNaN(benchmarkLivePrice)
-                        ? benchmarkLivePrice / benchmarkPrevClose - 1
-                        : null,
-            });
+        return {
+            asOfDate: nyDateString(),
+            portfolioReturn:
+                prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null,
+            benchmarkReturn:
+                !isNaN(benchmarkPrevClose) && benchmarkPrevClose > 0 && !isNaN(benchmarkLivePrice)
+                    ? benchmarkLivePrice / benchmarkPrevClose - 1
+                    : null,
         };
-
-        const eventSource = new EventSource(
-            `/api/live/stocks/stream?tickers=${encodeURIComponent(liveInputs.tickers.join(","))}`
-        );
-
-        eventSource.onmessage = (event) => {
-            const payload = JSON.parse(event.data);
-
-            if (payload.type === "status") {
-                setLiveMessage(payload.message || "");
-                if (payload.transport === "stream") {
-                    setLiveStatus("stream");
-                } else if (payload.transport === "poll") {
-                    setLiveStatus("poll");
-                } else {
-                    setLiveStatus("off");
-                }
-                return;
-            }
-
-            if (!payload.quotes) return;
-
-            for (const [ticker, quote] of Object.entries(payload.quotes)) {
-                quotesRef.current[ticker] = {
-                    ...quotesRef.current[ticker],
-                    ...quote,
-                };
-            }
-
-            if (payload.transport === "stream") {
-                setLiveStatus("stream");
-            } else if (payload.transport === "poll") {
-                setLiveStatus("poll");
-            }
-
-            computeLiveReturns();
-        };
-
-        eventSource.onerror = () => {
-            setLiveStatus((prev) => (prev === "poll" ? prev : "reconnecting"));
-            setLiveMessage((prev) => (prev.includes("updating every") ? prev : "Live prices: reconnecting"));
-        };
-
-        return () => {
-            eventSource.close();
-        };
-    }, [liveInputs]);
+    }, [liveInputs, liveSnapshot]);
 
     // ✅ MINIMAL CHANGE: resize Plotly charts on window size changes
     useEffect(() => {
@@ -518,15 +464,15 @@ export default function PlotlyDashboard({ account, onHeaderTextChange }) {
     }, [Plotly, charts]);
 
     const displayData = useMemo(
-        () => withLivePerformance(data, liveReturns, liveInputs, quotesRef.current),
-        [data, liveReturns, liveInputs]
+        () => withLivePerformance(data, liveReturns, liveInputs, liveSnapshot.quotes),
+        [data, liveReturns, liveInputs, liveSnapshot]
     );
     const headerText =
         liveInputs?.tickers?.length > 0
-            ? liveMessage ||
-                (liveStatus === "reconnecting"
+            ? liveSnapshot.message ||
+                (liveSnapshot.status === "reconnecting"
                     ? "Live prices: reconnecting"
-                    : liveStatus === "connecting"
+                    : liveSnapshot.status === "connecting"
                         ? "Live prices: connecting"
                         : "")
             : "";

@@ -97,6 +97,10 @@ def _resolve_live_price(quote: dict) -> float | None:
     return _first_valid_price(quote.get("price"), quote.get("prev_close"))
 
 
+def _poll_status_message() -> str:
+    return f"Live prices: updating every {LIVE_POLL_SECONDS} seconds"
+
+
 def _merge_quote(existing: dict | None, incoming: dict | None) -> dict:
     merged = dict(existing or {})
     incoming = incoming or {}
@@ -512,7 +516,7 @@ def _stream_polygon_stock_feed(tickers: list[str], emit, stop_event: threading.E
     emit({
         "type": "status",
         "transport": "poll",
-        "message": f"Live prices: updating every {LIVE_POLL_SECONDS} seconds",
+        "message": _poll_status_message(),
         "detail": str(last_stream_error) if last_stream_error else None,
     })
 
@@ -529,7 +533,7 @@ def _stream_polygon_stock_feed(tickers: list[str], emit, stop_event: threading.E
             emit({
                 "type": "status",
                 "transport": "poll",
-                "message": "Live prices: polling failed",
+                "message": _poll_status_message(),
                 "detail": str(exc),
             })
         stop_event.wait(LIVE_POLL_SECONDS)
