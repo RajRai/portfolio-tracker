@@ -8,7 +8,7 @@ import {
     Box,
 } from "@mui/material";
 import Papa from "papaparse";
-import { useTheme } from "@mui/material/styles";
+import { alpha, useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
 
 // 🧩 Lazy-import the light Plotly build on demand
@@ -40,6 +40,7 @@ const nyDateString = () => {
 };
 
 const EMPTY_LIVE_SNAPSHOT = { status: "off", message: "", quotes: {} };
+const DATE_RANGES = ["1m", "3m", "6m", "1y", "all"];
 
 const upsertSeriesPoint = (series, point) => {
     if (!series?.length) return point ? [point] : [];
@@ -184,7 +185,6 @@ const PerformanceTable = memo(({ tableData, theme }) => (
         className="performance-table"
         sx={{
             overflowX: "auto",
-            mb: 3,
             borderRadius: 1.5,
             boxShadow: "0px 1px 3px rgba(0,0,0,0.15)",
             bgcolor: theme.palette.background.paper,
@@ -311,6 +311,49 @@ const PerformanceTable = memo(({ tableData, theme }) => (
             </tbody>
         </table>
     </Box>
+));
+
+const RangeSelector = memo(({ range, onChange, theme }) => (
+    <Stack
+        direction="row"
+        spacing={0.5}
+        useFlexGap
+        flexWrap="wrap"
+        sx={{ mt: 1.25, justifyContent: { xs: "flex-start", sm: "flex-end" } }}
+    >
+        {DATE_RANGES.map((r) => {
+            const active = range === r;
+            return (
+                <Button
+                    key={r}
+                    variant="text"
+                    color="inherit"
+                    size="small"
+                    onClick={() => onChange(r)}
+                    sx={{
+                        minWidth: 0,
+                        px: 0.85,
+                        py: 0.15,
+                        minHeight: 24,
+                        borderRadius: 1,
+                        fontSize: "0.72rem",
+                        fontWeight: active ? 700 : 500,
+                        letterSpacing: "0.03em",
+                        textTransform: "uppercase",
+                        color: active ? theme.palette.primary.main : theme.palette.text.secondary,
+                        backgroundColor: active ? alpha(theme.palette.primary.main, 0.16) : "transparent",
+                        "&:hover": {
+                            backgroundColor: active
+                                ? alpha(theme.palette.primary.main, 0.22)
+                                : alpha(theme.palette.text.primary, 0.06),
+                        },
+                    }}
+                >
+                    {r}
+                </Button>
+            );
+        })}
+    </Stack>
 ));
 
 export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange }) {
@@ -877,6 +920,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 {title}
             </Typography>
             <div ref={ref} style={{ width: "100%", height: 400 }} />
+            <RangeSelector range={range} onChange={handleSetRange} theme={theme} />
             <Divider sx={{ mt: 4 }} />
         </div>
     );
@@ -890,24 +934,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 pb: 6,
             }}
         >
-            <Box sx={{ mb: 4 }}>
+            <Box sx={{ mb: 0.75 }}>
                 <PerformanceTable tableData={tableData} theme={theme} />
             </Box>
-
-            <Stack direction="row" spacing={1.5} useFlexGap flexWrap="wrap" sx={{ mb: 4 }}>
-                {["1m", "3m", "6m", "1y", "all"].map((r) => (
-                    <Button
-                        key={r}
-                        variant={range === r ? "contained" : "outlined"}
-                        color="primary"
-                        size="small"
-                        onClick={() => handleSetRange(r)}
-                        sx={{ minWidth: 64 }}
-                    >
-                        {r.toUpperCase()}
-                    </Button>
-                ))}
-            </Stack>
 
             {renderSection("Cumulative Performance vs Benchmark", charts.cum)}
             {renderSection("Daily Returns", charts.daily)}

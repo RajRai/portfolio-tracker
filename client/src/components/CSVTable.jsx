@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
 import Papa from "papaparse";
-import { Box, CircularProgress, Typography, Paper } from "@mui/material";
+import { Box, CircularProgress, Typography, Paper, useMediaQuery } from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
 import { DataGrid } from "@mui/x-data-grid";
 
 const EM_DASH = "\u2014";
@@ -22,6 +23,17 @@ const toNum = (v) => {
 const formatPct = (value) => (isNaN(value) ? EM_DASH : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`);
 
 export default function CSVTable({ src, live = false, liveStore, onHeaderTextChange }) {
+    const theme = useTheme();
+    const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+    const shellBackground =
+        theme.palette.mode === "dark"
+            ? alpha(theme.palette.common.black, 0.18)
+            : alpha(theme.palette.background.paper, 0.98);
+    const chromeBackground =
+        theme.palette.mode === "dark"
+            ? alpha(theme.palette.common.black, 0.34)
+            : alpha(theme.palette.common.black, 0.035);
+    const edgeColor = alpha(theme.palette.divider, theme.palette.mode === "dark" ? 0.24 : 0.14);
     const [rows, setRows] = useState([]);
     const [columns, setColumns] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -66,11 +78,12 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                     const sample = clean[0][h];
                     const numeric = isNumericLike(sample);
                     const glColumn = h.includes("G/L");
+                    const compactMinWidth = numeric ? 86 : 80;
                     return {
                         field: h,
                         headerName: h.replace(/_/g, " "),
                         flex: 1,
-                        minWidth: 120,
+                        minWidth: isMobile ? compactMinWidth : 120,
                         sortable: true,
                         align: numeric ? "right" : "left",
                         headerAlign: numeric ? "right" : "left",
@@ -116,7 +129,7 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
         return () => {
             cancelled = true;
         };
-    }, [live, src]);
+    }, [isMobile, live, src]);
 
     useEffect(() => {
         if (!live || !liveTickers.length) return;
@@ -184,30 +197,86 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
     return (
         <Paper
             sx={{
-                height: "calc(100dvh - 200px)",
-                width: "90%",
+                width: { xs: "100%", sm: "92%" },
+                maxWidth: "100%",
                 mx: "auto",
-                mt: 2,
-                borderRadius: 2,
+                mt: { xs: 1, sm: 2 },
+                borderRadius: { xs: "12px", sm: "10px" },
                 overflow: "hidden",
+                backgroundColor: shellBackground,
+                border: `1px solid ${edgeColor}`,
+                boxShadow: "none",
             }}
             elevation={3}
         >
             <DataGrid
+                autoHeight
                 rows={rows}
                 columns={columns}
                 disableRowSelectionOnClick
+                disableColumnMenu
+                hideFooterSelectedRowCount
+                density={isMobile ? "compact" : "standard"}
+                rowHeight={isMobile ? 32 : 40}
+                columnHeaderHeight={isMobile ? 34 : 40}
                 pageSizeOptions={[10, 25, 50]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 25, page: 0 } },
                 }}
                 sx={{
+                    border: 0,
+                    borderRadius: 0,
+                    backgroundColor: "transparent",
+                    "--DataGrid-containerBackground": chromeBackground,
+                    "--DataGrid-pinnedBackground": chromeBackground,
+                    "--DataGrid-rowBorderColor": edgeColor,
+                    "& .MuiDataGrid-filler, & .MuiDataGrid-scrollbarFiller, & .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders": {
+                        backgroundColor: chromeBackground,
+                        color: theme.palette.text.primary,
+                    },
                     "& .MuiDataGrid-columnHeaders": {
-                        backgroundColor: (theme) => theme.palette.grey[200],
+                        backgroundColor: chromeBackground,
                         fontWeight: 700,
+                        borderBottom: `1px solid ${edgeColor}`,
+                    },
+                    "& .MuiDataGrid-columnSeparator": {
+                        opacity: 0.16,
+                    },
+                    "& .MuiDataGrid-cell, & .MuiDataGrid-columnHeader": {
+                        borderColor: edgeColor,
                     },
                     "& .MuiDataGrid-row:hover": {
                         backgroundColor: (theme) => theme.palette.action.hover,
+                    },
+                    "& .MuiDataGrid-virtualScroller": {
+                        overflowX: "auto",
+                    },
+                    "& .MuiDataGrid-columnHeader": {
+                        px: isMobile ? 0.75 : 1.5,
+                    },
+                    "& .MuiDataGrid-cell": {
+                        px: isMobile ? 0.75 : 1.5,
+                        py: isMobile ? 0.25 : 0.5,
+                        fontSize: isMobile ? "0.74rem" : "0.875rem",
+                    },
+                    "& .MuiDataGrid-columnHeaderTitle": {
+                        fontSize: isMobile ? "0.72rem" : "0.875rem",
+                        fontWeight: 700,
+                    },
+                    "& .MuiDataGrid-footerContainer": {
+                        minHeight: isMobile ? 44 : 52,
+                        borderTop: `1px solid ${edgeColor}`,
+                        backgroundColor: chromeBackground,
+                        color: theme.palette.text.primary,
+                    },
+                    "& .MuiTablePagination-toolbar": {
+                        minHeight: isMobile ? 44 : 52,
+                        px: isMobile ? 0.5 : 1.5,
+                        backgroundColor: chromeBackground,
+                        color: theme.palette.text.primary,
+                    },
+                    "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows, & .MuiTablePagination-selectIcon, & .MuiIconButton-root": {
+                        color: theme.palette.text.primary,
                     },
                     "& .MuiDataGrid-cell.gl-pos": {
                         color: (theme) => theme.palette.success.main,
