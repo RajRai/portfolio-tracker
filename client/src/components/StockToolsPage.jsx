@@ -3,6 +3,7 @@ import {
     Alert,
     Box,
     Button,
+    Checkbox,
     Chip,
     Divider,
     FormControl,
@@ -197,37 +198,85 @@ function SourcePicker({
 }
 
 function MarketCapResults({ data, sourceHoldings }) {
+    const [included, setIncluded] = useState({});
     const sourceWeightByTicker = useMemo(
         () => Object.fromEntries((sourceHoldings || []).map((holding) => [holding.ticker, holding.source_weight])),
         [sourceHoldings]
     );
+    const rows = data?.rows || [];
+
+    React.useEffect(() => {
+        if (!rows.length) {
+            setIncluded({});
+            return;
+        }
+
+        setIncluded((prev) => {
+            const next = {};
+            for (const row of rows) {
+                next[row.ticker] = prev[row.ticker] ?? true;
+            }
+            return next;
+        });
+    }, [rows]);
+
+    const displayRows = useMemo(() => {
+        const includedTotal = rows.reduce(
+            (sum, row) => sum + (included[row.ticker] && row.market_cap ? Number(row.market_cap) : 0),
+            0
+        );
+
+        return rows.map((row) => ({
+            ...row,
+            adjusted_weight:
+                included[row.ticker] && row.market_cap && includedTotal > 0
+                    ? Number(row.market_cap) / includedTotal
+                    : 0,
+        }));
+    }, [rows, included]);
 
     if (!data) return null;
 
     return (
         <Box>
             <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Total market cap: {formatCurrency(data.total_market_cap)}
+                Total market value: {formatCurrency(data.total_market_cap)}
             </Typography>
             <Table size="small">
                 <TableHead>
                 <TableRow>
+                    <TableCell padding="checkbox">Use</TableCell>
                     <TableCell>Ticker</TableCell>
                     <TableCell>Name</TableCell>
-                    <TableCell align="right">Market Cap</TableCell>
-                    <TableCell align="right">Market Cap Weight</TableCell>
+                    <TableCell align="right">Market Value</TableCell>
+                    <TableCell align="right">Market Weight</TableCell>
                     <TableCell align="right">Source Weight</TableCell>
+                    <TableCell>Method</TableCell>
                     <TableCell>Note</TableCell>
                 </TableRow>
                 </TableHead>
                 <TableBody>
-                {data.rows.map((row) => (
+                {displayRows.map((row) => (
                     <TableRow key={row.ticker}>
+                        <TableCell padding="checkbox">
+                            <Checkbox
+                                size="small"
+                                checked={included[row.ticker] ?? true}
+                                onChange={(event) => {
+                                    setIncluded((prev) => ({
+                                        ...prev,
+                                        [row.ticker]: event.target.checked,
+                                    }));
+                                }}
+                                disabled={!row.market_cap}
+                            />
+                        </TableCell>
                         <TableCell>{row.ticker}</TableCell>
                         <TableCell>{row.name}</TableCell>
                         <TableCell align="right">{formatCurrency(row.market_cap)}</TableCell>
-                        <TableCell align="right">{formatPercent(row.weight)}</TableCell>
+                        <TableCell align="right">{formatPercent(row.adjusted_weight)}</TableCell>
                         <TableCell align="right">{formatPercent(sourceWeightByTicker[row.ticker])}</TableCell>
+                        <TableCell>{row.valuation_method || ""}</TableCell>
                         <TableCell>{row.note || ""}</TableCell>
                     </TableRow>
                 ))}

@@ -82,14 +82,46 @@ def test_market_cap_weights_calculates_percentages(monkeypatch):
             "MISSING": {"name": "Missing Co"},
         },
     )
+    monkeypatch.setattr(tools, "_fetch_yfinance_market_value", lambda ticker: None)
 
     payload = tools.market_cap_weights(["aapl", "msft", "aapl", "missing"], api_key="key")
 
     assert payload["total_market_cap"] == pytest.approx(400)
     assert payload["rows"][0]["ticker"] == "AAPL"
     assert payload["rows"][0]["weight"] == pytest.approx(0.75)
+    assert payload["rows"][0]["valuation_method"] == "Polygon market cap"
     assert payload["rows"][1]["weight"] == pytest.approx(0.25)
     assert payload["missing"] == ["MISSING"]
+
+
+def test_market_cap_weights_values_etfs_with_yfinance(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_ticker_overviews",
+        lambda tickers, api_key=None: {
+            "SPY": {"name": "SPDR S&P 500 ETF Trust", "type": "ETF"},
+            "AAPL": {"name": "Apple Inc", "market_cap": 300},
+        },
+    )
+    monkeypatch.setattr(
+        tools,
+        "_fetch_yfinance_market_value",
+        lambda ticker: {
+            "market_cap": 700,
+            "method": "Price x shares outstanding",
+            "price": 500,
+            "shares_outstanding": 1.4,
+        } if ticker == "SPY" else None,
+    )
+
+    payload = tools.market_cap_weights(["spy", "aapl"], api_key="key")
+
+    assert payload["total_market_cap"] == pytest.approx(1000)
+    assert payload["rows"][0]["ticker"] == "SPY"
+    assert payload["rows"][0]["weight"] == pytest.approx(0.7)
+    assert payload["rows"][0]["valuation_method"] == "Price x shares outstanding"
+    assert payload["rows"][0]["price"] == pytest.approx(500)
+    assert payload["rows"][0]["shares_outstanding"] == pytest.approx(1.4)
 
 
 def test_earnings_calendar_uses_yfinance(monkeypatch):

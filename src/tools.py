@@ -275,6 +275,101 @@ def _fetch_ticker_overviews(tickers: list[str], api_key: str | None = None) -> d
     return details
 
 
+def _first_dict_value(data: dict | None, *keys):
+    if not data:
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _fetch_yfinance_market_value(ticker: str) -> dict | None:
+    if yf is None:
+        return None
+
+    yf_ticker = yf.Ticker(ticker)
+    fast_info = {}
+    info = {}
+
+    try:
+        fast_info = dict(yf_ticker.fast_info or {})
+    except Exception:
+        fast_info = {}
+
+    market_cap = _to_float(_first_dict_value(fast_info, "market_cap", "marketCap"))
+    if market_cap is not None and market_cap > 0:
+        return {
+            "market_cap": market_cap,
+            "method": "Yahoo market cap",
+            "price": _to_float(_first_dict_value(fast_info, "last_price", "lastPrice", "regularMarketPrice")),
+            "shares_outstanding": None,
+        }
+
+    try:
+        info = yf_ticker.info or {}
+    except Exception:
+        info = {}
+
+    market_cap = _to_float(_first_dict_value(info, "marketCap"))
+    if market_cap is not None and market_cap > 0:
+        return {
+            "market_cap": market_cap,
+            "method": "Yahoo market cap",
+            "price": _to_float(_first_dict_value(info, "regularMarketPrice", "currentPrice", "navPrice")),
+            "shares_outstanding": _to_float(_first_dict_value(info, "sharesOutstanding", "impliedSharesOutstanding")),
+        }
+
+    price = _to_float(_first_dict_value(
+        fast_info,
+        "last_price",
+        "lastPrice",
+        "regularMarketPrice",
+        "navPrice",
+    ))
+    if price is None:
+        price = _to_float(_first_dict_value(
+            info,
+            "regularMarketPrice",
+            "currentPrice",
+            "previousClose",
+            "navPrice",
+        ))
+
+    shares = _to_float(_first_dict_value(
+        info,
+        "sharesOutstanding",
+        "impliedSharesOutstanding",
+    ))
+    if shares is None:
+        shares = _to_float(_first_dict_value(
+            fast_info,
+            "shares",
+            "sharesOutstanding",
+            "impliedSharesOutstanding",
+        ))
+
+    if price is not None and price > 0 and shares is not None and shares > 0:
+        return {
+            "market_cap": price * shares,
+            "method": "Price x shares outstanding",
+            "price": price,
+            "shares_outstanding": shares,
+        }
+
+    total_assets = _to_float(_first_dict_value(info, "totalAssets", "netAssets"))
+    if total_assets is not None and total_assets > 0:
+        return {
+            "market_cap": total_assets,
+            "method": "Total assets",
+            "price": price,
+            "shares_outstanding": shares,
+        }
+
+    return None
+
+
 def market_cap_weights(tickers, api_key: str | None = None) -> dict:
     normalized = normalize_tickers(tickers)
     if not normalized:
@@ -287,17 +382,38 @@ def market_cap_weights(tickers, api_key: str | None = None) -> dict:
     for ticker in normalized:
         item = details.get(ticker) or {}
         market_cap = _to_float(item.get("market_cap"))
+        valuation = None
+        method = "Polygon market cap" if market_cap is not None and market_cap > 0 else None
+        price = None
+        shares_outstanding = None
+        note = None
+
+        if market_cap is None or market_cap <= 0:
+            valuation = _fetch_yfinance_market_value(ticker)
+            if valuation:
+                market_cap = valuation["market_cap"]
+                method = valuation["method"]
+                price = valuation.get("price")
+                shares_outstanding = valuation.get("shares_outstanding")
+
         if market_cap is not None and market_cap > 0:
             total += market_cap
+        else:
+            note = "Market value unavailable"
+
         rows.append({
             "ticker": ticker,
             "name": item.get("name") or ticker,
             "market_cap": market_cap,
+            "market_value": market_cap,
+            "valuation_method": method,
+            "price": price,
+            "shares_outstanding": shares_outstanding,
             "exchange": item.get("primary_exchange"),
             "type": item.get("type"),
             "currency": item.get("currency_name"),
             "weight": None,
-            "note": None if market_cap and market_cap > 0 else "Market cap unavailable",
+            "note": note,
         })
 
     for row in rows:
