@@ -8,10 +8,7 @@ from urllib.parse import quote
 
 import requests
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+from src.yfinance_cache import yf
 
 
 POLYGON_BASE_URL = os.environ.get("POLYGON_BASE_URL", "https://api.polygon.io")
@@ -325,13 +322,137 @@ def _parse_date(value: str | None, fallback: date) -> date:
         raise ToolDataError("Dates must use YYYY-MM-DD format", 400) from exc
 
 
+def _date_from_any(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "date"):
+        try:
+            return value.date()
+        except (TypeError, ValueError):
+            pass
+    try:
+        return datetime.fromisoformat(str(value)[:10]).date()
+    except ValueError:
+        return None
+
+
+def _time_from_any(value) -> str | None:
+    if not hasattr(value, "time"):
+        return None
+    try:
+        event_time = value.time()
+    except (TypeError, ValueError):
+        return None
+    if event_time.hour == 0 and event_time.minute == 0 and event_time.second == 0:
+        return None
+    return event_time.strftime("%H:%M:%S")
+
+
+def _calendar_dates(calendar: dict) -> list[date]:
+    raw_dates = calendar.get("Earnings Date") if calendar else None
+    if raw_dates is None:
+        return []
+    if not isinstance(raw_dates, list):
+        raw_dates = [raw_dates]
+    return [event_date for event_date in (_date_from_any(value) for value in raw_dates) if event_date is not None]
+
+
+def _yfinance_earnings_events(ticker: str, start_date: date, end_date: date) -> tuple[list[dict], list[str]]:
+    if yf is None:
+        raise ToolDataError("yfinance is required for earnings calendar data", 502)
+
+    warnings = []
+    yf_ticker = yf.Ticker(ticker)
+    calendar = {}
+    events = []
+    seen_dates = set()
+
+    try:
+        frame = yf_ticker.get_earnings_dates(limit=100)
+    except Exception as exc:
+        frame = None
+        warnings.append(f"{ticker}: Yahoo earnings dates unavailable: {exc}")
+
+    if frame is not None and not frame.empty:
+        for event_dt, row in frame.iterrows():
+            event_date = _date_from_any(event_dt)
+            if event_date is None or event_date < start_date or event_date > end_date:
+                continue
+
+            estimated_eps = _to_float(row.get("EPS Estimate"))
+            actual_eps = _to_float(row.get("Reported EPS"))
+            surprise_percent = _to_float(row.get("Surprise(%)"))
+            seen_dates.add(event_date)
+            events.append({
+                "ticker": ticker,
+                "company_name": None,
+                "date": event_date.isoformat(),
+                "time": _time_from_any(event_dt),
+                "date_status": "reported" if actual_eps is not None else "estimated",
+                "fiscal_period": None,
+                "fiscal_year": None,
+                "importance": None,
+                "estimated_eps": estimated_eps,
+                "actual_eps": actual_eps,
+                "eps_surprise_percent": surprise_percent,
+                "estimated_revenue": None,
+                "actual_revenue": None,
+                "revenue_surprise_percent": None,
+                "currency": None,
+                "last_updated": None,
+                "provider": "Yahoo Finance",
+            })
+
+    try:
+        calendar = yf_ticker.calendar or {}
+    except Exception as exc:
+        warnings.append(f"{ticker}: Yahoo calendar unavailable: {exc}")
+
+    if calendar:
+        for event_date in _calendar_dates(calendar):
+            if event_date < start_date or event_date > end_date:
+                continue
+            estimated_eps = _to_float(calendar.get("Earnings Average"))
+            estimated_revenue = _to_float(calendar.get("Revenue Average"))
+            if event_date in seen_dates:
+                for event in events:
+                    if event["date"] == event_date.isoformat():
+                        event["estimated_eps"] = event["estimated_eps"] if event["estimated_eps"] is not None else estimated_eps
+                        event["estimated_revenue"] = estimated_revenue
+                continue
+            events.append({
+                "ticker": ticker,
+                "company_name": None,
+                "date": event_date.isoformat(),
+                "time": None,
+                "date_status": "estimated",
+                "fiscal_period": None,
+                "fiscal_year": None,
+                "importance": None,
+                "estimated_eps": estimated_eps,
+                "actual_eps": None,
+                "eps_surprise_percent": None,
+                "estimated_revenue": estimated_revenue,
+                "actual_revenue": None,
+                "revenue_surprise_percent": None,
+                "currency": None,
+                "last_updated": None,
+                "provider": "Yahoo Finance",
+            })
+
+    return events, warnings
+
+
 def earnings_calendar(tickers, start: str | None = None, end: str | None = None, api_key: str | None = None) -> dict:
     normalized = normalize_tickers(tickers)
     if not normalized:
         raise ToolDataError("Add at least one stock ticker", 400)
     if len(normalized) > MAX_EARNINGS_TICKERS:
         raise ToolDataError(f"Earnings calendar is limited to {MAX_EARNINGS_TICKERS} tickers per request", 400)
-    key = _polygon_key(api_key)
 
     today = date.today()
     start_date = _parse_date(start, today)
@@ -345,46 +466,20 @@ def earnings_calendar(tickers, start: str | None = None, end: str | None = None,
     warnings = []
     for ticker in normalized:
         try:
-            payload = _polygon_get(
-                "/benzinga/v1/earnings",
-                {
-                    "ticker": ticker,
-                    "date.gte": start_date.isoformat(),
-                    "date.lte": end_date.isoformat(),
-                    "sort": "date.asc",
-                    "limit": 50000,
-                },
-                key,
-            )
+            ticker_events, ticker_warnings = _yfinance_earnings_events(ticker, start_date, end_date)
         except ToolDataError as exc:
             warnings.append(f"{ticker}: {exc}")
             continue
 
-        for item in payload.get("results") or []:
-            events.append({
-                "ticker": item.get("ticker") or ticker,
-                "company_name": item.get("company_name"),
-                "date": item.get("date"),
-                "time": item.get("time"),
-                "date_status": item.get("date_status"),
-                "fiscal_period": item.get("fiscal_period"),
-                "fiscal_year": item.get("fiscal_year"),
-                "importance": item.get("importance"),
-                "estimated_eps": _to_float(item.get("estimated_eps")),
-                "actual_eps": _to_float(item.get("actual_eps")),
-                "eps_surprise_percent": _to_float(item.get("eps_surprise_percent")),
-                "estimated_revenue": _to_float(item.get("estimated_revenue")),
-                "actual_revenue": _to_float(item.get("actual_revenue")),
-                "revenue_surprise_percent": _to_float(item.get("revenue_surprise_percent")),
-                "currency": item.get("currency"),
-                "last_updated": item.get("last_updated"),
-            })
+        events.extend(ticker_events)
+        warnings.extend(ticker_warnings)
 
     events.sort(key=lambda item: (item.get("date") or "", item.get("time") or "", item.get("ticker") or ""))
     return {
         "tickers": normalized,
         "start": start_date.isoformat(),
         "end": end_date.isoformat(),
+        "provider": "Yahoo Finance",
         "events": events,
         "warnings": warnings,
     }

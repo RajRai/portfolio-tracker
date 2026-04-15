@@ -7,25 +7,14 @@ import pandas as pd
 import pytz
 import requests
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
-
 from src.util import BASE_DIR
+from src.yfinance_cache import YFINANCE_CACHE_DIR, YFINANCE_HISTORY_CACHE_DIR, yf
 
 ET = pytz.timezone("America/New_York")
 BASE_CACHE_DIR = BASE_DIR / "data" / ".cache"
 CACHE_DIR = BASE_CACHE_DIR / "polygon"
-YFINANCE_CACHE_DIR = BASE_CACHE_DIR / "yfinance"
-YFINANCE_HISTORY_CACHE_DIR = YFINANCE_CACHE_DIR / "history"
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-YFINANCE_HISTORY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-if yf is not None:
-    YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    yf.set_tz_cache_location(str(YFINANCE_CACHE_DIR))
 
 
 def _now_et():

@@ -1,12 +1,24 @@
 import csv
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
-from src import tools
+from src import tools, yfinance_cache
+from src.reports import polygon
 
 
 def test_normalize_tickers_dedupes_and_splits():
     assert tools.normalize_tickers(" aapl, msft;AAPL $brk.b bad/ticker ") == ["AAPL", "MSFT", "BRK.B"]
+
+
+def test_yfinance_cache_location_is_shared():
+    assert yfinance_cache.YFINANCE_CACHE_DIR.name == "yfinance"
+    assert yfinance_cache.YFINANCE_CACHE_DIR.parent.name == ".cache"
+    assert yfinance_cache.YFINANCE_CACHE_DIR.parent.parent.name == "data"
+    assert polygon.YFINANCE_CACHE_DIR == yfinance_cache.YFINANCE_CACHE_DIR
+    assert polygon.YFINANCE_HISTORY_CACHE_DIR == yfinance_cache.YFINANCE_HISTORY_CACHE_DIR
+    assert tools.yf is yfinance_cache.yf
 
 
 def test_portfolio_source_reads_weights_file(tmp_path):
@@ -80,28 +92,39 @@ def test_market_cap_weights_calculates_percentages(monkeypatch):
     assert payload["missing"] == ["MISSING"]
 
 
-def test_earnings_calendar_fetches_each_ticker(monkeypatch):
+def test_earnings_calendar_uses_yfinance(monkeypatch):
     calls = []
 
-    def fake_polygon_get(path, params, api_key=None):
-        calls.append((path, params, api_key))
-        return {
-            "results": [
-                {
-                    "ticker": params["ticker"],
-                    "company_name": f"{params['ticker']} Corp",
-                    "date": "2026-05-01",
-                    "time": "07:00:00",
-                    "estimated_eps": 1.25,
-                }
-            ]
-        }
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
 
-    monkeypatch.setattr(tools, "_polygon_get", fake_polygon_get)
+        def get_earnings_dates(self, limit=100):
+            calls.append((self.ticker, limit))
+            return pd.DataFrame(
+                {
+                    "EPS Estimate": [1.25],
+                    "Reported EPS": [None],
+                    "Surprise(%)": [None],
+                },
+                index=[pd.Timestamp("2026-05-01 07:00:00", tz="America/New_York")],
+            )
+
+        @property
+        def calendar(self):
+            return {
+                "Earnings Date": [pd.Timestamp("2026-05-01").date()],
+                "Revenue Average": 123000000,
+            }
+
+    monkeypatch.setattr(tools, "yf", SimpleNamespace(Ticker=FakeTicker))
 
     payload = tools.earnings_calendar(["AAPL", "MSFT"], "2026-04-15", "2026-05-15", api_key="key")
 
-    assert [call[1]["ticker"] for call in calls] == ["AAPL", "MSFT"]
-    assert calls[0][1]["date.gte"] == "2026-04-15"
+    assert calls == [("AAPL", 100), ("MSFT", 100)]
+    assert payload["provider"] == "Yahoo Finance"
     assert payload["events"][0]["ticker"] == "AAPL"
+    assert payload["events"][0]["time"] == "07:00:00"
+    assert payload["events"][0]["provider"] == "Yahoo Finance"
+    assert payload["events"][0]["estimated_revenue"] == pytest.approx(123000000)
     assert payload["events"][1]["ticker"] == "MSFT"
