@@ -51,7 +51,7 @@ data/
     { "id": "QRSTUVWXYZ", "name": "All Trading History" }
   ]
   ```
-- The UI also supports an optional `about` field on each portfolio entry in `accounts.json`. That text is shown in the "About this portfolio" modal and supports escaped newlines such as `\n`.
+- The UI also supports an optional `about` field on each portfolio entry in `accounts.json`. When provided, that text is shown in the "About this portfolio" modal and supports escaped newlines such as `\n`; portfolios without about text do not show the link.
 - Each `<account_id>/statements/` folder contains one or more CSV statements exported from Fidelity.
     - File names don’t matter — they are auto-discovered.
     - Each account must have its own `statements/` subdirectory.
