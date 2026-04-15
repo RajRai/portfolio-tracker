@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     AppBar,
+    Button,
     Tabs,
     Tab,
     Toolbar,
@@ -19,7 +20,9 @@ import Papa from "papaparse";
 import CheckIcon from "@mui/icons-material/Check";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import AccountTabs from "./components/AccountTabs.jsx";
+import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
 import { deepClone } from "@mui/x-data-grid/internals";
 
@@ -55,12 +58,26 @@ const POLL_LIVE_MESSAGE = "Live prices: updating every 5 seconds";
 const STREAM_LIVE_MESSAGE = "Live prices: updating live";
 const CONNECTING_LIVE_MESSAGE = "Live prices: connecting";
 
+const TOOL_PATHS = {
+    home: "/",
+    marketCap: "/tools/market-cap-weights",
+    earnings: "/tools/earnings-calendar",
+};
+
+const pageFromPath = (path) => {
+    const cleanPath = path.replace(/\/$/, "") || "/";
+    if (cleanPath === TOOL_PATHS.marketCap) return "marketCap";
+    if (cleanPath === TOOL_PATHS.earnings) return "earnings";
+    return "home";
+};
+
 export default function App() {
     const [accounts, setAccounts] = useState([]);
     const [liveConfigs, setLiveConfigs] = useState([]);
     const [accountDailyReturns, setAccountDailyReturns] = useState({});
     const [active, setActive] = useState(0);
     const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(() => pageFromPath(window.location.pathname));
     const theme = useTheme();
     const quotesRef = useRef({});
     const liveStore = useMemo(() => {
@@ -145,6 +162,22 @@ export default function App() {
                 umamiTrack("accounts_load_failed", {});
             });
     }, []);
+
+    useEffect(() => {
+        const onPopState = () => {
+            setPage(pageFromPath(window.location.pathname));
+        };
+        window.addEventListener("popstate", onPopState);
+        return () => window.removeEventListener("popstate", onPopState);
+    }, []);
+
+    const navigateTo = (nextPage) => {
+        const nextPath = TOOL_PATHS[nextPage] || TOOL_PATHS.home;
+        if (window.location.pathname !== nextPath) {
+            window.history.pushState({}, "", nextPath);
+        }
+        setPage(nextPage);
+    };
 
     useEffect(() => {
         if (!liveConfigs.length) return;
@@ -294,17 +327,35 @@ export default function App() {
     }, [active, accounts]);
 
     if (loading) return <CircularProgress sx={{ m: 4 }} />;
-    if (!accounts.length) return <Typography sx={{ m: 4 }}>No accounts found.</Typography>;
+
+    const appBarSurface = theme.palette.mode === "dark"
+        ? theme.palette.background.paper
+        : theme.palette.primary.main;
+    const appBarText = theme.palette.mode === "dark"
+        ? theme.palette.text.primary
+        : theme.palette.primary.contrastText;
 
     return (
         <Box sx={{ display: "flex", flexDirection: "column", height: "100dvh" }}>
             <ThemeEditorModal />
 
             {/* ======= AppBar ======= */}
-            <AppBar position="static" color="primary" style={{ borderRadius: 0 }}>
+            <AppBar
+                position="static"
+                color="transparent"
+                elevation={0}
+                sx={{
+                    borderRadius: 0,
+                    bgcolor: appBarSurface,
+                    color: appBarText,
+                    borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
+                }}
+            >
                 <Toolbar
                     variant="dense"
                     sx={{
+                        bgcolor: "inherit",
+                        color: "inherit",
                         justifyContent: "space-between",
                         minHeight: 40,
                         px: 1.5,
@@ -314,9 +365,10 @@ export default function App() {
                 >
                     {/* ===== Account Tabs ===== */}
                     <Tabs
-                        value={active}
+                        value={page === "home" && accounts[active] ? active : false}
                         onChange={(_, v) => {
                             setActive(v);
+                            navigateTo("home");
 
                             const acc = accounts?.[v];
                             umamiTrack("account_tab_click", {
@@ -405,6 +457,8 @@ export default function App() {
                             flexShrink: 0,
                         }}
                     >
+                        <DesktopToolsMenu page={page} onNavigate={navigateTo} />
+
                         {/* Theme Picker */}
                         <ThemeSelector
                             selectProps={{
@@ -413,8 +467,13 @@ export default function App() {
                                 sx: {
                                     fontSize: "0.8rem",
                                     height: 30,
-                                    bgcolor: "rgba(255,255,255,0.1)",
+                                    color: "inherit",
+                                    bgcolor: "transparent",
+                                    "& .MuiSelect-icon": { color: "inherit" },
                                     "& fieldset": { border: "none" },
+                                    "&:hover": {
+                                        bgcolor: "rgba(255,255,255,0.08)",
+                                    },
                                 },
                             }}
                         />
@@ -423,6 +482,14 @@ export default function App() {
                         <NewThemeButton
                             buttonProps={{
                                 color: "inherit",
+                                size: "small",
+                                sx: {
+                                    textTransform: "none",
+                                    bgcolor: "transparent",
+                                    "&:hover": {
+                                        bgcolor: "rgba(255,255,255,0.08)",
+                                    },
+                                },
                             }}
                         />
 
@@ -450,7 +517,7 @@ export default function App() {
 
                     {/* ===== Mobile dropdown ===== */}
                     <Box sx={{ display: { xs: "flex", sm: "none" }, flexShrink: 0 }}>
-                        <MobileMenu />
+                        <MobileMenu onNavigate={navigateTo} />
                     </Box>
                 </Toolbar>
             </AppBar>
@@ -463,13 +530,78 @@ export default function App() {
                     bgcolor: theme.palette.background.default,
                 }}
             >
-                <AccountTabs account={accounts[active]} liveStore={liveStore} />
+                {page === "marketCap" && <StockToolsPage tool="marketCap" accounts={accounts} />}
+                {page === "earnings" && <StockToolsPage tool="earnings" accounts={accounts} />}
+                {page === "home" && accounts[active] && (
+                    <AccountTabs account={accounts[active]} liveStore={liveStore} />
+                )}
+                {page === "home" && !accounts.length && (
+                    <Typography sx={{ m: 4 }}>No accounts found.</Typography>
+                )}
             </Box>
         </Box>
     );
 }
 
-function MobileMenu() {
+function DesktopToolsMenu({ page, onNavigate }) {
+    const [anchorEl, setAnchorEl] = useState(null);
+    const open = Boolean(anchorEl);
+
+    const handleClose = () => {
+        setAnchorEl(null);
+    };
+
+    const handleNavigate = (nextPage) => {
+        handleClose();
+        onNavigate(nextPage);
+    };
+
+    return (
+        <>
+            <Button
+                color="inherit"
+                size="small"
+                aria-controls={open ? "desktop-tools-menu" : undefined}
+                aria-haspopup="true"
+                aria-expanded={open ? "true" : undefined}
+                onClick={(event) => setAnchorEl(event.currentTarget)}
+                endIcon={<ArrowDropDownIcon fontSize="small" />}
+                sx={{
+                    textTransform: "none",
+                    minWidth: 0,
+                    px: 1,
+                    "& .MuiButton-endIcon": {
+                        ml: 0.25,
+                    },
+                    bgcolor: "transparent",
+                    "&:hover": {
+                        bgcolor: "rgba(255,255,255,0.08)",
+                    },
+                }}
+            >
+                Tools
+            </Button>
+            <Menu
+                id="desktop-tools-menu"
+                anchorEl={anchorEl}
+                open={open}
+                onClose={handleClose}
+                transformOrigin={{ horizontal: "right", vertical: "top" }}
+                anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+                MenuListProps={{ dense: true }}
+            >
+                <MenuItem selected={page === "marketCap"} onClick={() => handleNavigate("marketCap")}>
+                    Market Cap Weights
+                </MenuItem>
+                <MenuItem selected={page === "earnings"} onClick={() => handleNavigate("earnings")}>
+                    Earnings Calendar
+                </MenuItem>
+            </Menu>
+        </>
+    );
+}
+
+function MobileMenu({ onNavigate }) {
     const [anchorEl, setAnchorEl] = useState(null);
     const open = Boolean(anchorEl);
     const { onEditTheme, activeTheme, presets, customThemes, activeThemeId, setActiveTheme } = useThemeManager();
@@ -500,6 +632,26 @@ function MobileMenu() {
                 anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
                 MenuListProps={{ dense: true }}
             >
+                <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>
+                    Tools
+                </ListSubheader>
+                <MenuItem
+                    onClick={() => {
+                        handleClose();
+                        onNavigate("marketCap");
+                    }}
+                >
+                    Market Cap Weights
+                </MenuItem>
+                <MenuItem
+                    onClick={() => {
+                        handleClose();
+                        onNavigate("earnings");
+                    }}
+                >
+                    Earnings Calendar
+                </MenuItem>
+
                 <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>
                     Theme
                 </ListSubheader>

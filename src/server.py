@@ -15,6 +15,7 @@ from flask import Flask, send_from_directory, jsonify, request, Response, stream
 import requests
 from websockets.sync.client import connect
 
+from src.tools import ToolDataError, earnings_calendar, market_cap_weights, stock_source
 from src.util import BASE_DIR
 
 load_dotenv()
@@ -795,6 +796,56 @@ def stream_live_stocks():
         "X-Accel-Buffering": "no",
     }
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers=headers)
+
+
+# ============================================================
+#  API: stock tools
+# ============================================================
+def _json_body() -> dict:
+    return request.get_json(silent=True) or {}
+
+
+def _tool_error_response(exc: ToolDataError):
+    return jsonify({"error": str(exc)}), exc.status_code
+
+
+@app.route("/api/tools/stock-source", methods=["POST"])
+def tool_stock_source():
+    try:
+        payload = stock_source(
+            _json_body(),
+            _load_accounts(),
+            OUT_DIR,
+            os.environ.get("POLYGON_API_KEY"),
+        )
+    except ToolDataError as exc:
+        return _tool_error_response(exc)
+    return jsonify(payload)
+
+
+@app.route("/api/tools/market-cap-weights", methods=["POST"])
+def tool_market_cap_weights():
+    body = _json_body()
+    try:
+        payload = market_cap_weights(body.get("tickers"), os.environ.get("POLYGON_API_KEY"))
+    except ToolDataError as exc:
+        return _tool_error_response(exc)
+    return jsonify(payload)
+
+
+@app.route("/api/tools/earnings-calendar", methods=["POST"])
+def tool_earnings_calendar():
+    body = _json_body()
+    try:
+        payload = earnings_calendar(
+            body.get("tickers"),
+            body.get("start"),
+            body.get("end"),
+            os.environ.get("POLYGON_API_KEY"),
+        )
+    except ToolDataError as exc:
+        return _tool_error_response(exc)
+    return jsonify(payload)
 
 # ============================================================
 #  Serve QuantStats HTML reports
