@@ -98,7 +98,7 @@ function StockListEditor({ tickers, onChange, sourceHoldings }) {
                 <TextField
                     fullWidth
                     size="small"
-                    label="Add stocks"
+                    label="Add tickers"
                     value={entry}
                     onChange={(event) => setEntry(event.target.value)}
                     onKeyDown={(event) => {
@@ -132,7 +132,7 @@ function StockListEditor({ tickers, onChange, sourceHoldings }) {
 
             {!tickers.length && (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                    Load a source or add stocks manually.
+                    Load a portfolio or add tickers manually.
                 </Typography>
             )}
         </Box>
@@ -141,57 +141,34 @@ function StockListEditor({ tickers, onChange, sourceHoldings }) {
 
 function SourcePicker({
     accounts,
-    sourceType,
-    setSourceType,
     accountId,
     setAccountId,
-    fundTicker,
-    setFundTicker,
     onLoad,
     loading,
 }) {
     return (
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} alignItems={{ md: "center" }}>
-            <FormControl size="small" sx={{ minWidth: 170 }}>
-                <InputLabel>Source</InputLabel>
-                <Select value={sourceType} label="Source" onChange={(event) => setSourceType(event.target.value)}>
-                    <MenuItem value="portfolio">Portfolio</MenuItem>
-                    <MenuItem value="fund">Index fund</MenuItem>
+            <FormControl size="small" sx={{ minWidth: 260 }} disabled={!accounts.length}>
+                <InputLabel>Portfolio</InputLabel>
+                <Select
+                    value={accountId}
+                    label="Portfolio"
+                    onChange={(event) => setAccountId(event.target.value)}
+                >
+                    {accounts.map((account) => (
+                        <MenuItem key={account.id} value={account.id}>
+                            {account.name}
+                        </MenuItem>
+                    ))}
                 </Select>
             </FormControl>
-
-            {sourceType === "portfolio" ? (
-                <FormControl size="small" sx={{ minWidth: 260 }} disabled={!accounts.length}>
-                    <InputLabel>Portfolio</InputLabel>
-                    <Select
-                        value={accountId}
-                        label="Portfolio"
-                        onChange={(event) => setAccountId(event.target.value)}
-                    >
-                        {accounts.map((account) => (
-                            <MenuItem key={account.id} value={account.id}>
-                                {account.name}
-                            </MenuItem>
-                        ))}
-                    </Select>
-                </FormControl>
-            ) : (
-                <TextField
-                    size="small"
-                    label="Index fund ticker"
-                    value={fundTicker}
-                    onChange={(event) => setFundTicker(event.target.value.toUpperCase())}
-                    placeholder="SPY"
-                    sx={{ minWidth: 180 }}
-                />
-            )}
 
             <Button
                 variant="outlined"
                 onClick={onLoad}
-                disabled={loading || (sourceType === "portfolio" ? !accountId : !fundTicker.trim())}
+                disabled={loading || !accountId}
             >
-                Load Source
+                Load Portfolio
             </Button>
         </Stack>
     );
@@ -240,7 +217,7 @@ function MarketCapResults({ data, sourceHoldings }) {
     return (
         <Box>
             <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Total market value: {formatCurrency(data.total_market_cap)}
+                Total market cap: {formatCurrency(data.total_market_cap)}
             </Typography>
             <Table size="small">
                 <TableHead>
@@ -248,7 +225,7 @@ function MarketCapResults({ data, sourceHoldings }) {
                     <TableCell padding="checkbox">Use</TableCell>
                     <TableCell>Ticker</TableCell>
                     <TableCell>Name</TableCell>
-                    <TableCell align="right">Market Value</TableCell>
+                    <TableCell align="right">Market Cap</TableCell>
                     <TableCell align="right">Market Weight</TableCell>
                     <TableCell align="right">Source Weight</TableCell>
                     <TableCell>Method</TableCell>
@@ -337,9 +314,7 @@ function EarningsResults({ data }) {
 
 export default function StockToolsPage({ tool, accounts }) {
     const isEarnings = tool === "earnings";
-    const [sourceType, setSourceType] = useState("portfolio");
     const [accountId, setAccountId] = useState(accounts[0]?.id || "");
-    const [fundTicker, setFundTicker] = useState("SPY");
     const [tickers, setTickers] = useState([]);
     const [sourceHoldings, setSourceHoldings] = useState([]);
     const [sourceSummary, setSourceSummary] = useState(null);
@@ -367,9 +342,8 @@ export default function StockToolsPage({ tool, accounts }) {
 
         try {
             const payload = await postJson("/api/tools/stock-source", {
-                sourceType,
+                sourceType: "portfolio",
                 accountId,
-                fundTicker,
             });
             setTickers(payload.tickers || []);
             setSourceHoldings(payload.holdings || []);
@@ -410,8 +384,8 @@ export default function StockToolsPage({ tool, accounts }) {
 
     const title = isEarnings ? "Earnings Calendar" : "Market Cap Weights";
     const description = isEarnings
-        ? "Choose a portfolio or fund, adjust the stock list, then scan earnings dates."
-        : "Choose a portfolio or fund, adjust the stock list, then derive market-cap weights.";
+        ? "Load a portfolio or type tickers manually, then scan earnings dates."
+        : "Load a portfolio or type tickers manually, then derive market-cap weights.";
 
     return (
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto", px: { xs: 1.5, sm: 3 }, py: 3 }}>
@@ -425,12 +399,8 @@ export default function StockToolsPage({ tool, accounts }) {
             <Paper sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2, mb: 2 }}>
                 <SourcePicker
                     accounts={accounts}
-                    sourceType={sourceType}
-                    setSourceType={setSourceType}
                     accountId={accountId}
                     setAccountId={setAccountId}
-                    fundTicker={fundTicker}
-                    setFundTicker={setFundTicker}
                     onLoad={loadSource}
                     loading={loadingSource}
                 />

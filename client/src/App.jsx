@@ -568,12 +568,25 @@ function DesktopToolsMenu({ page, onNavigate }) {
                 endIcon={<ArrowDropDownIcon fontSize="small" />}
                 sx={{
                     textTransform: "none",
-                    minWidth: 0,
-                    px: 1,
-                    "& .MuiButton-endIcon": {
-                        ml: 0.25,
-                    },
+                    letterSpacing: 0,
+                    fontSize: "0.8rem",
+                    fontWeight: 400,
+                    lineHeight: 1.4375,
+                    height: 30,
+                    minWidth: 120,
+                    px: 1.75,
+                    borderRadius: 1,
+                    color: "inherit",
                     bgcolor: "transparent",
+                    justifyContent: "space-between",
+                    "& .MuiButton-endIcon": {
+                        ml: 1,
+                        mr: -0.5,
+                        color: "inherit",
+                        "& svg": {
+                            fontSize: 18,
+                        },
+                    },
                     "&:hover": {
                         bgcolor: "rgba(255,255,255,0.08)",
                     },

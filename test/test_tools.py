@@ -41,35 +41,9 @@ def test_portfolio_source_reads_weights_file(tmp_path):
     assert payload["holdings"][1]["quantity"] == pytest.approx(5.0)
 
 
-def test_fund_source_uses_polygon_etf_constituents(monkeypatch):
-    monkeypatch.setattr(
-        tools,
-        "_polygon_paginated",
-        lambda *args, **kwargs: [
-            {
-                "effective_date": "2026-04-14",
-                "processed_date": "2026-04-15",
-                "constituent_ticker": "AAPL",
-                "constituent_name": "Apple Inc",
-                "weight": 0.07,
-                "asset_class": "Equity",
-            },
-            {
-                "effective_date": "2026-04-14",
-                "constituent_ticker": "MSFT",
-                "constituent_name": "Microsoft Corp",
-                "weight": 0.06,
-                "asset_class": "Equity",
-            },
-        ],
-    )
-
-    payload = tools.fund_source("spy", api_key="key")
-
-    assert payload["source"]["provider"] == "Polygon ETF Global"
-    assert payload["source"]["effective_date"] == "2026-04-14"
-    assert payload["tickers"] == ["AAPL", "MSFT"]
-    assert payload["holdings"][0]["source_weight"] == pytest.approx(0.07)
+def test_stock_source_rejects_fund_source(tmp_path):
+    with pytest.raises(tools.ToolDataError, match="Index fund loading was removed"):
+        tools.stock_source({"sourceType": "fund", "fundTicker": "SPY"}, [], tmp_path, api_key="key")
 
 
 def test_market_cap_weights_calculates_percentages(monkeypatch):
@@ -82,7 +56,6 @@ def test_market_cap_weights_calculates_percentages(monkeypatch):
             "MISSING": {"name": "Missing Co"},
         },
     )
-    monkeypatch.setattr(tools, "_fetch_yfinance_market_value", lambda ticker: None)
 
     payload = tools.market_cap_weights(["aapl", "msft", "aapl", "missing"], api_key="key")
 
@@ -94,7 +67,7 @@ def test_market_cap_weights_calculates_percentages(monkeypatch):
     assert payload["missing"] == ["MISSING"]
 
 
-def test_market_cap_weights_values_etfs_with_yfinance(monkeypatch):
+def test_market_cap_weights_flags_etfs_without_market_caps(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_fetch_ticker_overviews",
@@ -103,25 +76,16 @@ def test_market_cap_weights_values_etfs_with_yfinance(monkeypatch):
             "AAPL": {"name": "Apple Inc", "market_cap": 300},
         },
     )
-    monkeypatch.setattr(
-        tools,
-        "_fetch_yfinance_market_value",
-        lambda ticker: {
-            "market_cap": 700,
-            "method": "Price x shares outstanding",
-            "price": 500,
-            "shares_outstanding": 1.4,
-        } if ticker == "SPY" else None,
-    )
 
     payload = tools.market_cap_weights(["spy", "aapl"], api_key="key")
 
-    assert payload["total_market_cap"] == pytest.approx(1000)
-    assert payload["rows"][0]["ticker"] == "SPY"
-    assert payload["rows"][0]["weight"] == pytest.approx(0.7)
-    assert payload["rows"][0]["valuation_method"] == "Price x shares outstanding"
-    assert payload["rows"][0]["price"] == pytest.approx(500)
-    assert payload["rows"][0]["shares_outstanding"] == pytest.approx(1.4)
+    rows_by_ticker = {row["ticker"]: row for row in payload["rows"]}
+    assert payload["total_market_cap"] == pytest.approx(300)
+    assert rows_by_ticker["AAPL"]["weight"] == pytest.approx(1.0)
+    assert rows_by_ticker["SPY"]["weight"] is None
+    assert rows_by_ticker["SPY"]["note"] == "Market cap unavailable - ETF"
+    assert rows_by_ticker["SPY"]["valuation_method"] is None
+    assert payload["missing"] == ["SPY"]
 
 
 def test_earnings_calendar_uses_yfinance(monkeypatch):

@@ -82,22 +82,6 @@ def _polygon_get(path_or_url: str, params: dict | None = None, api_key: str | No
     return response.json()
 
 
-def _polygon_paginated(path: str, params: dict, api_key: str | None = None, max_pages: int = 20) -> list[dict]:
-    results = []
-    next_url = path
-    next_params = dict(params)
-    pages = 0
-
-    while next_url and pages < max_pages:
-        payload = _polygon_get(next_url, next_params, api_key)
-        results.extend(payload.get("results") or [])
-        next_url = payload.get("next_url")
-        next_params = {}
-        pages += 1
-
-    return results
-
-
 def _read_csv_rows(path: Path) -> list[dict]:
     with open(path, "r", newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
@@ -156,115 +140,13 @@ def _dedupe_holdings(payload: dict) -> dict:
     return payload
 
 
-def _polygon_fund_holdings(fund_ticker: str, api_key: str | None = None) -> dict:
-    results = _polygon_paginated(
-        "/etf-global/v1/constituents",
-        {
-            "composite_ticker": fund_ticker,
-            "limit": 5000,
-            "sort": "weight.desc",
-        },
-        api_key,
-        max_pages=5,
-    )
-    holdings = []
-    effective_dates = []
-    processed_dates = []
-
-    for item in results:
-        ticker = normalize_tickers(item.get("constituent_ticker"))[:1]
-        if not ticker:
-            continue
-        effective_dates.append(item.get("effective_date"))
-        processed_dates.append(item.get("processed_date"))
-        holdings.append({
-            "ticker": ticker[0],
-            "name": item.get("constituent_name") or ticker[0],
-            "source_weight": _to_float(item.get("weight")),
-            "market_value": _to_float(item.get("market_value")),
-            "shares_held": _to_float(item.get("shares_held")),
-            "asset_class": item.get("asset_class"),
-            "security_type": item.get("security_type"),
-        })
-
-    return _dedupe_holdings({
-        "source": {
-            "type": "fund",
-            "label": fund_ticker,
-            "id": fund_ticker,
-            "provider": "Polygon ETF Global",
-            "effective_date": next((value for value in effective_dates if value), None),
-            "processed_date": next((value for value in processed_dates if value), None),
-        },
-        "holdings": holdings,
-        "warnings": [],
-    })
-
-
-def _yfinance_fund_holdings(fund_ticker: str) -> dict:
-    if yf is None:
-        raise ToolDataError("yfinance is required for fund holdings fallback", 502)
-
-    frame = yf.Ticker(fund_ticker).funds_data.top_holdings
-    if frame is None or frame.empty:
-        raise ToolDataError("No holdings were found for that fund ticker", 404)
-
-    holdings = []
-    for symbol, row in frame.iterrows():
-        ticker = normalize_tickers(symbol)[:1]
-        if not ticker:
-            continue
-        holdings.append({
-            "ticker": ticker[0],
-            "name": row.get("Name") or ticker[0],
-            "source_weight": _to_float(row.get("Holding Percent")),
-        })
-
-    return _dedupe_holdings({
-        "source": {
-            "type": "fund",
-            "label": fund_ticker,
-            "id": fund_ticker,
-            "provider": "Yahoo Finance top holdings",
-        },
-        "holdings": holdings,
-        "warnings": [
-            "Using Yahoo Finance top holdings because complete ETF constituents were unavailable."
-        ],
-    })
-
-
-def fund_source(fund_ticker: str, api_key: str | None = None) -> dict:
-    ticker = normalize_tickers(fund_ticker)[:1]
-    if not ticker:
-        raise ToolDataError("Enter an index fund or ETF ticker", 400)
-
-    fund = ticker[0]
-    warnings = []
-    try:
-        payload = _polygon_fund_holdings(fund, api_key)
-        if payload["holdings"]:
-            return payload
-    except ToolDataError as exc:
-        warnings.append(f"Polygon ETF holdings unavailable: {exc}")
-
-    try:
-        payload = _yfinance_fund_holdings(fund)
-        payload["warnings"] = warnings + payload.get("warnings", [])
-        return payload
-    except ToolDataError as exc:
-        warnings.append(str(exc))
-
-    raise ToolDataError("; ".join(warnings) or "No holdings were found for that fund ticker", 404)
-
-
 def stock_source(body: dict, accounts: list[dict], out_dir: Path, api_key: str | None = None) -> dict:
     source_type = (body.get("sourceType") or "").strip().lower()
     if source_type == "portfolio":
         return portfolio_source(body.get("accountId"), accounts, out_dir)
     if source_type == "fund":
-        return fund_source(body.get("fundTicker"), api_key)
-    raise ToolDataError("Choose a portfolio or fund source", 400)
+        raise ToolDataError("Index fund loading was removed. Add those stocks manually.", 400)
+    raise ToolDataError("Choose a portfolio source or add stocks manually", 400)
 
 
 def _fetch_ticker_overviews(tickers: list[str], api_key: str | None = None) -> dict[str, dict]:
@@ -275,99 +157,10 @@ def _fetch_ticker_overviews(tickers: list[str], api_key: str | None = None) -> d
     return details
 
 
-def _first_dict_value(data: dict | None, *keys):
-    if not data:
-        return None
-    for key in keys:
-        value = data.get(key)
-        if value is not None:
-            return value
-    return None
-
-
-def _fetch_yfinance_market_value(ticker: str) -> dict | None:
-    if yf is None:
-        return None
-
-    yf_ticker = yf.Ticker(ticker)
-    fast_info = {}
-    info = {}
-
-    try:
-        fast_info = dict(yf_ticker.fast_info or {})
-    except Exception:
-        fast_info = {}
-
-    market_cap = _to_float(_first_dict_value(fast_info, "market_cap", "marketCap"))
-    if market_cap is not None and market_cap > 0:
-        return {
-            "market_cap": market_cap,
-            "method": "Yahoo market cap",
-            "price": _to_float(_first_dict_value(fast_info, "last_price", "lastPrice", "regularMarketPrice")),
-            "shares_outstanding": None,
-        }
-
-    try:
-        info = yf_ticker.info or {}
-    except Exception:
-        info = {}
-
-    market_cap = _to_float(_first_dict_value(info, "marketCap"))
-    if market_cap is not None and market_cap > 0:
-        return {
-            "market_cap": market_cap,
-            "method": "Yahoo market cap",
-            "price": _to_float(_first_dict_value(info, "regularMarketPrice", "currentPrice", "navPrice")),
-            "shares_outstanding": _to_float(_first_dict_value(info, "sharesOutstanding", "impliedSharesOutstanding")),
-        }
-
-    price = _to_float(_first_dict_value(
-        fast_info,
-        "last_price",
-        "lastPrice",
-        "regularMarketPrice",
-        "navPrice",
-    ))
-    if price is None:
-        price = _to_float(_first_dict_value(
-            info,
-            "regularMarketPrice",
-            "currentPrice",
-            "previousClose",
-            "navPrice",
-        ))
-
-    shares = _to_float(_first_dict_value(
-        info,
-        "sharesOutstanding",
-        "impliedSharesOutstanding",
-    ))
-    if shares is None:
-        shares = _to_float(_first_dict_value(
-            fast_info,
-            "shares",
-            "sharesOutstanding",
-            "impliedSharesOutstanding",
-        ))
-
-    if price is not None and price > 0 and shares is not None and shares > 0:
-        return {
-            "market_cap": price * shares,
-            "method": "Price x shares outstanding",
-            "price": price,
-            "shares_outstanding": shares,
-        }
-
-    total_assets = _to_float(_first_dict_value(info, "totalAssets", "netAssets"))
-    if total_assets is not None and total_assets > 0:
-        return {
-            "market_cap": total_assets,
-            "method": "Total assets",
-            "price": price,
-            "shares_outstanding": shares,
-        }
-
-    return None
+def _is_etf_overview(item: dict) -> bool:
+    ticker_type = str(item.get("type") or "").upper()
+    name = str(item.get("name") or "").upper()
+    return ticker_type == "ETF" or "ETF" in ticker_type or "EXCHANGE TRADED FUND" in name
 
 
 def market_cap_weights(tickers, api_key: str | None = None) -> dict:
@@ -382,24 +175,13 @@ def market_cap_weights(tickers, api_key: str | None = None) -> dict:
     for ticker in normalized:
         item = details.get(ticker) or {}
         market_cap = _to_float(item.get("market_cap"))
-        valuation = None
         method = "Polygon market cap" if market_cap is not None and market_cap > 0 else None
-        price = None
-        shares_outstanding = None
         note = None
-
-        if market_cap is None or market_cap <= 0:
-            valuation = _fetch_yfinance_market_value(ticker)
-            if valuation:
-                market_cap = valuation["market_cap"]
-                method = valuation["method"]
-                price = valuation.get("price")
-                shares_outstanding = valuation.get("shares_outstanding")
 
         if market_cap is not None and market_cap > 0:
             total += market_cap
         else:
-            note = "Market value unavailable"
+            note = "Market cap unavailable - ETF" if _is_etf_overview(item) else "Market cap unavailable"
 
         rows.append({
             "ticker": ticker,
@@ -407,8 +189,6 @@ def market_cap_weights(tickers, api_key: str | None = None) -> dict:
             "market_cap": market_cap,
             "market_value": market_cap,
             "valuation_method": method,
-            "price": price,
-            "shares_outstanding": shares_outstanding,
             "exchange": item.get("primary_exchange"),
             "type": item.get("type"),
             "currency": item.get("currency_name"),
