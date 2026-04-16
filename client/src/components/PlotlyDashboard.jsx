@@ -39,6 +39,31 @@ const nyDateString = () => {
     return `${values.year}-${values.month}-${values.day}`;
 };
 
+const timestampToNyDate = (value) => {
+    if (value == null || value === "") return null;
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return null;
+
+    const absTs = Math.abs(raw);
+    const divisor =
+        absTs >= 1e17 ? 1e9 :
+            absTs >= 1e14 ? 1e6 :
+                absTs >= 1e11 ? 1e3 :
+                    1;
+
+    const date = new Date(raw / divisor);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
 const EMPTY_LIVE_SNAPSHOT = { status: "off", message: "", quotes: {} };
 const DATE_RANGES = ["1m", "3m", "6m", "1y", "all"];
 
@@ -51,6 +76,55 @@ const upsertSeriesPoint = (series, point) => {
         next.push(point);
     }
     return next;
+};
+
+const rollForwardSeries = (series, asOfDate) => {
+    if (!series?.length) return series;
+    const next = series.slice();
+    const lastDate = next[next.length - 1]?.t;
+    if (!lastDate || lastDate >= asOfDate) return next;
+
+    const current = new Date(`${lastDate}T00:00:00`);
+    const end = new Date(`${asOfDate}T00:00:00`);
+    current.setDate(current.getDate() + 1);
+
+    while (current <= end) {
+        next.push({
+            t: current.toISOString().slice(0, 10),
+            v: next[next.length - 1]?.v ?? null,
+        });
+        current.setDate(current.getDate() + 1);
+    }
+    return next;
+};
+
+const carryLatestPointToDate = (series, asOfDate) => {
+    if (!series?.length) return series;
+    const lastDate = series[series.length - 1]?.t;
+    if (!lastDate || lastDate >= asOfDate) return series.slice();
+
+    const next = series.slice(0, -1);
+    const current = new Date(`${lastDate}T00:00:00`);
+    const end = new Date(`${asOfDate}T00:00:00`);
+    const lastValue = series[series.length - 1]?.v ?? null;
+    current.setDate(current.getDate() + 1);
+
+    while (current <= end) {
+        next.push({
+            t: current.toISOString().slice(0, 10),
+            v: lastValue,
+        });
+        current.setDate(current.getDate() + 1);
+    }
+    return next;
+};
+
+const rollForwardWeights = (weightsSeries, asOfDate) => {
+    if (!weightsSeries?.length) return weightsSeries;
+    return weightsSeries.map((series) => ({
+        ...series,
+        points: rollForwardSeries(series.points, asOfDate),
+    }));
 };
 
 const withLiveEquity = (equitySeries, liveReturn, asOfDate) => {
@@ -129,52 +203,73 @@ const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
     };
 
     if (liveReturns.portfolioReturn != null) {
-        next.portfolio.daily = upsertSeriesPoint(payload.portfolio.daily, {
-            t: liveReturns.asOfDate,
-            v: liveReturns.portfolioReturn,
-        });
-        next.portfolio.equity = withLiveEquity(
-            payload.portfolio.equity,
-            liveReturns.portfolioReturn,
-            liveReturns.asOfDate
-        );
+        if (liveReturns.portfolioHasTradeToday) {
+            next.portfolio.daily = upsertSeriesPoint(payload.portfolio.daily, {
+                t: liveReturns.asOfDate,
+                v: liveReturns.portfolioReturn,
+            });
+            next.portfolio.equity = withLiveEquity(
+                payload.portfolio.equity,
+                liveReturns.portfolioReturn,
+                liveReturns.asOfDate
+            );
+        } else {
+            next.portfolio.daily = carryLatestPointToDate(payload.portfolio.daily, liveReturns.asOfDate);
+            next.portfolio.equity = rollForwardSeries(payload.portfolio.equity, liveReturns.asOfDate);
+        }
+    } else {
+        next.portfolio.daily = carryLatestPointToDate(payload.portfolio.daily, liveReturns.asOfDate);
+        next.portfolio.equity = rollForwardSeries(payload.portfolio.equity, liveReturns.asOfDate);
     }
 
     if (liveReturns.benchmarkReturn != null) {
-        next.benchmark.daily = upsertSeriesPoint(payload.benchmark.daily, {
-            t: liveReturns.asOfDate,
-            v: liveReturns.benchmarkReturn,
-        });
-        next.benchmark.equity = withLiveEquity(
-            payload.benchmark.equity,
-            liveReturns.benchmarkReturn,
-            liveReturns.asOfDate
-        );
+        if (liveReturns.benchmarkHasTradeToday) {
+            next.benchmark.daily = upsertSeriesPoint(payload.benchmark.daily, {
+                t: liveReturns.asOfDate,
+                v: liveReturns.benchmarkReturn,
+            });
+            next.benchmark.equity = withLiveEquity(
+                payload.benchmark.equity,
+                liveReturns.benchmarkReturn,
+                liveReturns.asOfDate
+            );
+        } else {
+            next.benchmark.daily = carryLatestPointToDate(payload.benchmark.daily, liveReturns.asOfDate);
+            next.benchmark.equity = rollForwardSeries(payload.benchmark.equity, liveReturns.asOfDate);
+        }
     }
 
     if (liveReturns.portfolioReturn != null && liveReturns.benchmarkReturn != null) {
         const liveSpread = liveReturns.portfolioReturn - liveReturns.benchmarkReturn;
-        next.spread.daily = upsertSeriesPoint(payload.spread.daily, {
-            t: liveReturns.asOfDate,
-            v: liveSpread,
-        });
-        next.spread.cumulative = withLiveCompoundedReturn(
-            payload.spread.cumulative,
-            liveSpread,
-            liveReturns.asOfDate
-        );
-        next.multiple.daily = upsertSeriesPoint(payload.multiple.daily, {
-            t: liveReturns.asOfDate,
-            v: clampForMultiple(liveReturns.portfolioReturn) / clampForMultiple(liveReturns.benchmarkReturn),
-        });
+        if (liveReturns.portfolioHasTradeToday || liveReturns.benchmarkHasTradeToday) {
+            next.spread.daily = upsertSeriesPoint(payload.spread.daily, {
+                t: liveReturns.asOfDate,
+                v: liveSpread,
+            });
+            next.spread.cumulative = withLiveCompoundedReturn(
+                payload.spread.cumulative,
+                liveSpread,
+                liveReturns.asOfDate
+            );
+            next.multiple.daily = upsertSeriesPoint(payload.multiple.daily, {
+                t: liveReturns.asOfDate,
+                v: clampForMultiple(liveReturns.portfolioReturn) / clampForMultiple(liveReturns.benchmarkReturn),
+            });
+        } else {
+            next.spread.daily = carryLatestPointToDate(payload.spread.daily, liveReturns.asOfDate);
+            next.spread.cumulative = rollForwardSeries(payload.spread.cumulative, liveReturns.asOfDate);
+            next.multiple.daily = carryLatestPointToDate(payload.multiple.daily, liveReturns.asOfDate);
+        }
     }
 
-    next.weights = withLiveWeights(
-        payload.weights,
-        liveInputs,
-        quotes,
-        liveReturns.asOfDate
-    );
+    next.weights = liveReturns.portfolioHasTradeToday
+        ? withLiveWeights(
+            payload.weights,
+            liveInputs,
+            quotes,
+            liveReturns.asOfDate
+        )
+        : rollForwardWeights(payload.weights, liveReturns.asOfDate);
 
     return next;
 };
@@ -454,8 +549,10 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const liveReturns = useMemo(() => {
         if (!liveInputs?.tickers?.length) return null;
 
+        const asOfDate = nyDateString();
         let prevCloseValue = 0;
         let liveValue = 0;
+        let hasPortfolioTradeToday = false;
 
         for (const holding of liveInputs.holdings) {
             const quote = liveSnapshot.quotes?.[holding.ticker];
@@ -466,6 +563,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
             prevCloseValue += holding.quantity * prevClose;
             liveValue += holding.quantity * livePrice;
+            if (!isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate) {
+                hasPortfolioTradeToday = true;
+            }
         }
 
         const benchmarkQuote = liveSnapshot.quotes?.[liveInputs.benchmarkTicker];
@@ -473,15 +573,21 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         const benchmarkPrice = toNum(benchmarkQuote?.price);
         const benchmarkLivePrice =
             !isNaN(benchmarkPrice) && benchmarkPrice > 0 ? benchmarkPrice : benchmarkPrevClose;
+        const benchmarkHasTradeToday =
+            !isNaN(benchmarkPrice) && benchmarkPrice > 0 && timestampToNyDate(benchmarkQuote?.updated) === asOfDate;
+
+        const portfolioReturn = prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null;
+        const benchmarkReturn =
+            !isNaN(benchmarkPrevClose) && benchmarkPrevClose > 0 && !isNaN(benchmarkLivePrice)
+                ? benchmarkLivePrice / benchmarkPrevClose - 1
+                : null;
 
         return {
-            asOfDate: nyDateString(),
-            portfolioReturn:
-                prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null,
-            benchmarkReturn:
-                !isNaN(benchmarkPrevClose) && benchmarkPrevClose > 0 && !isNaN(benchmarkLivePrice)
-                    ? benchmarkLivePrice / benchmarkPrevClose - 1
-                    : null,
+            asOfDate,
+            portfolioReturn,
+            benchmarkReturn,
+            portfolioHasTradeToday: hasPortfolioTradeToday,
+            benchmarkHasTradeToday,
         };
     }, [liveInputs, liveSnapshot]);
 

@@ -60,8 +60,40 @@ def test_fetch_stock_snapshots_ignores_zero_snapshot_price(monkeypatch):
     assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
 
 
+def test_fetch_stock_snapshots_keeps_prior_day_last_trade_before_first_trade(monkeypatch):
+    previous_trade_ms = 1776110340000  # 2026-04-13 15:59:00 ET
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tickers": [
+                    {
+                        "ticker": "AAA",
+                        "lastTrade": {"p": 11.0, "t": previous_trade_ms},
+                        "min": {"c": 11.0, "t": previous_trade_ms},
+                        "day": {"c": 11.0, "t": previous_trade_ms},
+                        "prevDay": {"c": 10.0},
+                        "updated": 1776268800000,
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    quotes = server._fetch_stock_snapshots(["AAA"])
+
+    assert quotes["AAA"]["price"] == pytest.approx(11.0)
+    assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
+    assert quotes["AAA"]["updated"] == previous_trade_ms
+
+
 def test_apply_live_payload_updates_latest_points(monkeypatch):
     monkeypatch.setattr(server, "_ny_date_string", lambda: "2026-04-08")
+    same_day_trade_ms = 1775678340000  # 2026-04-08 15:59:00 ET
 
     payload = {
         "portfolio": {
@@ -86,8 +118,8 @@ def test_apply_live_payload_updates_latest_points(monkeypatch):
     }
     holdings = [{"ticker": "AAA", "quantity": 10.0, "basis_approx": 80.0}]
     quotes = {
-        "AAA": {"price": 11.0, "prev_close": 10.0},
-        "SPY": {"price": 102.0, "prev_close": 100.0},
+        "AAA": {"price": 11.0, "updated": same_day_trade_ms, "prev_close": 10.0},
+        "SPY": {"price": 102.0, "updated": same_day_trade_ms, "prev_close": 100.0},
     }
 
     refreshed = server._apply_live_payload(payload, holdings, "SPY", quotes)
@@ -103,6 +135,105 @@ def test_apply_live_payload_updates_latest_points(monkeypatch):
     assert refreshed["portfolio"]["equity"][-1]["t"] == "2026-04-08"
     assert refreshed["portfolio"]["equity"][-1]["v"] == pytest.approx(1.111)
     assert refreshed["weights"][0]["points"][-1] == {"t": "2026-04-08", "v": 1.0}
+
+
+def test_apply_live_payload_rolls_forward_equity_without_recompounding(monkeypatch):
+    monkeypatch.setattr(server, "_ny_date_string", lambda: "2026-04-08")
+
+    payload = {
+        "portfolio": {
+            "daily": [{"t": "2026-04-07", "v": 0.1}],
+            "equity": [{"t": "2026-04-07", "v": 1.1}],
+        },
+        "benchmark": {
+            "ticker": "SPY",
+            "daily": [{"t": "2026-04-07", "v": 0.02}],
+            "equity": [{"t": "2026-04-07", "v": 1.02}],
+        },
+        "spread": {
+            "daily": [{"t": "2026-04-07", "v": 0.08}],
+            "cumulative": [{"t": "2026-04-07", "v": 0.08}],
+        },
+        "multiple": {
+            "daily": [{"t": "2026-04-07", "v": 5.0}],
+        },
+        "weights": [
+            {"name": "AAA", "points": [{"t": "2026-04-07", "v": 1.0}]},
+        ],
+    }
+    holdings = [{"ticker": "AAA", "quantity": 10.0, "basis_approx": 80.0}]
+    quotes = {
+        "AAA": {"price": 11.0, "updated": 1776110340000, "prev_close": 10.0},
+        "SPY": {"price": 102.0, "updated": 1776110340000, "prev_close": 100.0},
+    }
+
+    refreshed = server._apply_live_payload(payload, holdings, "SPY", quotes)
+
+    assert refreshed["portfolio"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.1)}]
+    assert refreshed["portfolio"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.1)}
+    assert refreshed["benchmark"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.02)}]
+    assert refreshed["benchmark"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.02)}
+    assert refreshed["spread"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.08)}]
+    assert refreshed["spread"]["cumulative"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.08)}
+    assert refreshed["multiple"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(5.0)}]
+
+
+def test_apply_live_payload_fills_non_trading_days_between_last_trade_and_today(monkeypatch):
+    monkeypatch.setattr(server, "_ny_date_string", lambda: "2026-04-12")
+
+    payload = {
+        "portfolio": {
+            "daily": [{"t": "2026-04-10", "v": 0.1}],
+            "equity": [{"t": "2026-04-10", "v": 1.1}],
+        },
+        "benchmark": {
+            "ticker": "SPY",
+            "daily": [{"t": "2026-04-10", "v": 0.02}],
+            "equity": [{"t": "2026-04-10", "v": 1.02}],
+        },
+        "spread": {
+            "daily": [{"t": "2026-04-10", "v": 0.08}],
+            "cumulative": [{"t": "2026-04-10", "v": 0.08}],
+        },
+        "multiple": {
+            "daily": [{"t": "2026-04-10", "v": 5.0}],
+        },
+        "weights": [
+            {"name": "AAA", "points": [{"t": "2026-04-10", "v": 1.0}]},
+        ],
+    }
+    holdings = [{"ticker": "AAA", "quantity": 10.0, "basis_approx": 80.0}]
+    quotes = {
+        "AAA": {"price": 11.0, "updated": 1776110340000, "prev_close": 10.0},
+        "SPY": {"price": 102.0, "updated": 1776110340000, "prev_close": 100.0},
+    }
+
+    refreshed = server._apply_live_payload(payload, holdings, "SPY", quotes)
+
+    assert refreshed["portfolio"]["equity"][-2:] == [
+        {"t": "2026-04-11", "v": pytest.approx(1.1)},
+        {"t": "2026-04-12", "v": pytest.approx(1.1)},
+    ]
+    assert refreshed["portfolio"]["daily"][-2:] == [
+        {"t": "2026-04-11", "v": pytest.approx(0.1)},
+        {"t": "2026-04-12", "v": pytest.approx(0.1)},
+    ]
+    assert refreshed["benchmark"]["daily"] == [
+        {"t": "2026-04-11", "v": pytest.approx(0.02)},
+        {"t": "2026-04-12", "v": pytest.approx(0.02)},
+    ]
+    assert refreshed["spread"]["daily"] == [
+        {"t": "2026-04-11", "v": pytest.approx(0.08)},
+        {"t": "2026-04-12", "v": pytest.approx(0.08)},
+    ]
+    assert refreshed["multiple"]["daily"] == [
+        {"t": "2026-04-11", "v": pytest.approx(5.0)},
+        {"t": "2026-04-12", "v": pytest.approx(5.0)},
+    ]
+    assert refreshed["weights"][0]["points"][-2:] == [
+        {"t": "2026-04-11", "v": pytest.approx(1.0)},
+        {"t": "2026-04-12", "v": pytest.approx(1.0)},
+    ]
 
 
 def test_refresh_weights_rows_updates_live_columns():

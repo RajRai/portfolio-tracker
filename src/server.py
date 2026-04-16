@@ -5,7 +5,7 @@ import math
 import os
 import queue
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -98,6 +98,51 @@ def _resolve_live_price(quote: dict) -> float | None:
     return _first_valid_price(quote.get("price"), quote.get("prev_close"))
 
 
+def _timestamp_to_ny_date(value) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    abs_ts = abs(ts)
+    if abs_ts >= 10**17:
+        divisor = 1_000_000_000
+    elif abs_ts >= 10**14:
+        divisor = 1_000_000
+    elif abs_ts >= 10**11:
+        divisor = 1_000
+    else:
+        divisor = 1
+
+    try:
+        dt = datetime.fromtimestamp(ts / divisor, tz=ZoneInfo("UTC")).astimezone(NY_TZ)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return dt.strftime("%Y-%m-%d")
+
+
+def _snapshot_price(item: dict) -> tuple[float | None, int | None]:
+    for source in (item.get("lastTrade") or {}, item.get("min") or {}, item.get("day") or {}):
+        price = _valid_price(source.get("p"))
+        if price is None:
+            price = _valid_price(source.get("c"))
+        updated = source.get("t")
+        if price is None:
+            continue
+        try:
+            updated_value = int(updated)
+        except (TypeError, ValueError):
+            updated_value = None
+        return price, updated_value
+    return None, None
+
+
+def _quote_has_trade_today(quote: dict, as_of_date: str) -> bool:
+    return _valid_price(quote.get("price")) is not None and _timestamp_to_ny_date(quote.get("updated")) == as_of_date
+
+
 def _poll_status_message() -> str:
     return f"Live prices: updating every {LIVE_POLL_SECONDS} seconds"
 
@@ -139,16 +184,8 @@ def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
             if not ticker:
                 continue
 
-            last_trade = item.get("lastTrade") or {}
-            minute = item.get("min") or {}
-            day = item.get("day") or {}
             prev_day = item.get("prevDay") or {}
-            price = _first_valid_price(
-                last_trade.get("p"),
-                minute.get("c"),
-                day.get("c"),
-            )
-
+            price, price_updated = _snapshot_price(item)
             prev_close = _valid_price(prev_day.get("c"))
             if price is None and prev_close is None:
                 continue
@@ -156,7 +193,7 @@ def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
             out[ticker] = {
                 "price": price,
                 "prev_close": prev_close,
-                "updated": last_trade.get("t") or minute.get("t") or item.get("updated"),
+                "updated": price_updated or item.get("updated"),
             }
 
     return out
@@ -192,6 +229,52 @@ def _upsert_series_point(series: list[dict], point: dict) -> list[dict]:
     return next_series
 
 
+def _roll_forward_series(series: list[dict], as_of_date: str) -> list[dict]:
+    if not series:
+        return series
+    next_series = list(series)
+    last_date = next_series[-1].get("t")
+    if not last_date or last_date >= as_of_date:
+        return next_series
+
+    current_date = datetime.strptime(last_date, "%Y-%m-%d").date() + timedelta(days=1)
+    end_date = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    last_value = next_series[-1].get("v")
+    while current_date <= end_date:
+        next_series.append({"t": current_date.isoformat(), "v": last_value})
+        current_date += timedelta(days=1)
+    return next_series
+
+
+def _carry_latest_point_to_date(series: list[dict], as_of_date: str) -> list[dict]:
+    if not series:
+        return series
+    last_date = series[-1].get("t")
+    if not last_date or last_date >= as_of_date:
+        return list(series)
+
+    next_series = list(series[:-1])
+    current_date = datetime.strptime(last_date, "%Y-%m-%d").date() + timedelta(days=1)
+    end_date = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    last_value = series[-1].get("v")
+    while current_date <= end_date:
+        next_series.append({"t": current_date.isoformat(), "v": last_value})
+        current_date += timedelta(days=1)
+    return next_series
+
+
+def _roll_forward_weights_series(weights_series: list[dict], as_of_date: str) -> list[dict]:
+    if not weights_series:
+        return weights_series
+    return [
+        {
+            **series,
+            "points": _roll_forward_series(series.get("points", []), as_of_date),
+        }
+        for series in weights_series
+    ]
+
+
 def _with_live_equity(series: list[dict], live_return: float | None, as_of_date: str) -> list[dict]:
     if not series or live_return is None:
         return series
@@ -204,7 +287,11 @@ def _with_live_equity(series: list[dict], live_return: float | None, as_of_date:
     return _upsert_series_point(next_series, {"t": as_of_date, "v": base_value * (1 + live_return)})
 
 
-def _with_live_compounded_return(series: list[dict], live_return: float | None, as_of_date: str) -> list[dict]:
+def _with_live_compounded_return(
+    series: list[dict],
+    live_return: float | None,
+    as_of_date: str,
+) -> list[dict]:
     if not series or live_return is None:
         return series
     next_series = list(series)
@@ -267,9 +354,11 @@ def _extract_holdings(rows: list[dict]) -> list[dict]:
 
 
 def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: dict) -> dict | None:
+    as_of_date = _ny_date_string()
     prev_close_value = 0.0
     live_value = 0.0
     live_value_by_ticker = {}
+    has_portfolio_trade_today = False
 
     for holding in holdings:
         quote = quotes.get(holding["ticker"]) or {}
@@ -282,10 +371,13 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
         prev_close_value += holding["quantity"] * prev_close
         live_value += ticker_value
         live_value_by_ticker[holding["ticker"]] = ticker_value
+        if _quote_has_trade_today(quote, as_of_date):
+            has_portfolio_trade_today = True
 
     benchmark_quote = quotes.get(benchmark_ticker) or {}
     benchmark_prev_close = _valid_price(benchmark_quote.get("prev_close"))
     benchmark_live_price = _resolve_live_price(benchmark_quote)
+    benchmark_has_trade_today = _quote_has_trade_today(benchmark_quote, as_of_date)
 
     portfolio_return = None
     benchmark_return = None
@@ -298,9 +390,11 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
         return None
 
     return {
-        "as_of_date": _ny_date_string(),
+        "as_of_date": as_of_date,
         "portfolio_return": portfolio_return,
         "benchmark_return": benchmark_return,
+        "portfolio_has_trade_today": has_portfolio_trade_today,
+        "benchmark_has_trade_today": benchmark_has_trade_today,
         "live_value_by_ticker": live_value_by_ticker,
         "total_live_value": live_value,
     }
@@ -339,54 +433,93 @@ def _apply_live_payload(payload: dict, holdings: list[dict], benchmark_ticker: s
     as_of_date = live_snapshot["as_of_date"]
     portfolio_return = live_snapshot["portfolio_return"]
     benchmark_return = live_snapshot["benchmark_return"]
+    portfolio_has_trade_today = live_snapshot.get("portfolio_has_trade_today", False)
+    benchmark_has_trade_today = live_snapshot.get("benchmark_has_trade_today", False)
 
     if portfolio_return is not None:
         next_payload.setdefault("portfolio", {})
-        next_payload["portfolio"]["daily"] = _upsert_series_point(
-            next_payload["portfolio"].get("daily", []),
-            {"t": as_of_date, "v": portfolio_return},
-        )
-        next_payload["portfolio"]["equity"] = _with_live_equity(
-            next_payload["portfolio"].get("equity", []),
-            portfolio_return,
-            as_of_date,
-        )
+        if portfolio_has_trade_today:
+            next_payload["portfolio"]["daily"] = _upsert_series_point(
+                next_payload["portfolio"].get("daily", []),
+                {"t": as_of_date, "v": portfolio_return},
+            )
+            next_payload["portfolio"]["equity"] = _with_live_equity(
+                next_payload["portfolio"].get("equity", []),
+                portfolio_return,
+                as_of_date,
+            )
+        else:
+            next_payload["portfolio"]["daily"] = _carry_latest_point_to_date(
+                next_payload["portfolio"].get("daily", []),
+                as_of_date,
+            )
+            next_payload["portfolio"]["equity"] = _roll_forward_series(
+                next_payload["portfolio"].get("equity", []),
+                as_of_date,
+            )
 
     if benchmark_return is not None:
         next_payload.setdefault("benchmark", {})
         next_payload["benchmark"]["ticker"] = benchmark_ticker
-        next_payload["benchmark"]["daily"] = _upsert_series_point(
-            next_payload["benchmark"].get("daily", []),
-            {"t": as_of_date, "v": benchmark_return},
-        )
-        next_payload["benchmark"]["equity"] = _with_live_equity(
-            next_payload["benchmark"].get("equity", []),
-            benchmark_return,
-            as_of_date,
-        )
+        if benchmark_has_trade_today:
+            next_payload["benchmark"]["daily"] = _upsert_series_point(
+                next_payload["benchmark"].get("daily", []),
+                {"t": as_of_date, "v": benchmark_return},
+            )
+            next_payload["benchmark"]["equity"] = _with_live_equity(
+                next_payload["benchmark"].get("equity", []),
+                benchmark_return,
+                as_of_date,
+            )
+        else:
+            next_payload["benchmark"]["daily"] = _carry_latest_point_to_date(
+                next_payload["benchmark"].get("daily", []),
+                as_of_date,
+            )
+            next_payload["benchmark"]["equity"] = _roll_forward_series(
+                next_payload["benchmark"].get("equity", []),
+                as_of_date,
+            )
 
     if portfolio_return is not None and benchmark_return is not None:
         spread = portfolio_return - benchmark_return
         next_payload.setdefault("spread", {})
-        next_payload["spread"]["daily"] = _upsert_series_point(
-            next_payload["spread"].get("daily", []),
-            {"t": as_of_date, "v": spread},
-        )
-        next_payload["spread"]["cumulative"] = _with_live_compounded_return(
-            next_payload["spread"].get("cumulative", []),
-            spread,
-            as_of_date,
-        )
         next_payload.setdefault("multiple", {})
-        next_payload["multiple"]["daily"] = _upsert_series_point(
-            next_payload["multiple"].get("daily", []),
-            {
-                "t": as_of_date,
-                "v": _clamp_for_multiple(portfolio_return) / _clamp_for_multiple(benchmark_return),
-            },
-        )
+        if portfolio_has_trade_today or benchmark_has_trade_today:
+            next_payload["spread"]["daily"] = _upsert_series_point(
+                next_payload["spread"].get("daily", []),
+                {"t": as_of_date, "v": spread},
+            )
+            next_payload["spread"]["cumulative"] = _with_live_compounded_return(
+                next_payload["spread"].get("cumulative", []),
+                spread,
+                as_of_date,
+            )
+            next_payload["multiple"]["daily"] = _upsert_series_point(
+                next_payload["multiple"].get("daily", []),
+                {
+                    "t": as_of_date,
+                    "v": _clamp_for_multiple(portfolio_return) / _clamp_for_multiple(benchmark_return),
+                },
+            )
+        else:
+            next_payload["spread"]["daily"] = _carry_latest_point_to_date(
+                next_payload["spread"].get("daily", []),
+                as_of_date,
+            )
+            next_payload["spread"]["cumulative"] = _roll_forward_series(
+                next_payload["spread"].get("cumulative", []),
+                as_of_date,
+            )
+            next_payload["multiple"]["daily"] = _carry_latest_point_to_date(
+                next_payload["multiple"].get("daily", []),
+                as_of_date,
+            )
 
-    next_payload["weights"] = _with_live_weights(next_payload.get("weights", []), live_snapshot)
+    if portfolio_has_trade_today:
+        next_payload["weights"] = _with_live_weights(next_payload.get("weights", []), live_snapshot)
+    else:
+        next_payload["weights"] = _roll_forward_weights_series(next_payload.get("weights", []), as_of_date)
     return next_payload
 
 
