@@ -39,8 +39,7 @@ NY_TZ = ZoneInfo("America/New_York")
 
 app = Flask(
     __name__,
-    static_folder=str(CLIENT_DIR),
-    static_url_path="/"
+    static_folder=None,
 )
 
 # Only enable CORS in development
