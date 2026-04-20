@@ -20,6 +20,42 @@ const toNum = (v) => {
     return isNaN(n) ? NaN : n;
 };
 
+const nyDateString = () => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
+const timestampToNyDate = (value) => {
+    if (value == null || value === "") return null;
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return null;
+
+    const absTs = Math.abs(raw);
+    const timestampMs =
+        absTs >= 1e17 ? raw / 1e6 :
+            absTs >= 1e14 ? raw / 1e3 :
+                absTs >= 1e11 ? raw :
+                    raw * 1000;
+
+    const date = new Date(timestampMs);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
 const formatPct = (value) => (isNaN(value) ? EM_DASH : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`);
 
 export default function CSVTable({ src, live = false, liveStore, onHeaderTextChange }) {
@@ -133,6 +169,14 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
 
     useEffect(() => {
         if (!live || !liveTickers.length) return;
+        const asOfDate = nyDateString();
+        const hasAnyTradeToday = liveTickers.some((ticker) => {
+            const quote = liveSnapshot.quotes?.[ticker];
+            const price = toNum(quote?.price);
+            return !isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate;
+        });
+
+        if (!hasAnyTradeToday) return;
 
         setRows((prev) =>
             prev.map((row) => {
@@ -144,7 +188,9 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                 const basisApprox = toNum(row._BasisApprox);
                 const price = toNum(quote.price);
                 const prevClose = toNum(quote.prev_close);
-                const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
+                const quoteTradedToday =
+                    !isNaN(price) && price > 0 && timestampToNyDate(quote.updated) === asOfDate;
+                const livePrice = quoteTradedToday ? price : prevClose;
                 const next = {};
 
                 if (!isNaN(livePrice) && livePrice > 0 && !isNaN(prevClose) && prevClose !== 0) {

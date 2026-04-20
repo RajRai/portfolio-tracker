@@ -45,13 +45,13 @@ const timestampToNyDate = (value) => {
     if (!Number.isFinite(raw)) return null;
 
     const absTs = Math.abs(raw);
-    const divisor =
-        absTs >= 1e17 ? 1e9 :
-            absTs >= 1e14 ? 1e6 :
-                absTs >= 1e11 ? 1e3 :
-                    1;
+    const timestampMs =
+        absTs >= 1e17 ? raw / 1e6 :
+            absTs >= 1e14 ? raw / 1e3 :
+                absTs >= 1e11 ? raw :
+                    raw * 1000;
 
-    const date = new Date(raw / divisor);
+    const date = new Date(timestampMs);
     if (Number.isNaN(date.getTime())) return null;
 
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -172,7 +172,9 @@ const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
         const quote = quotes[holding.ticker];
         const prevClose = toNum(quote?.prev_close);
         const price = toNum(quote?.price);
-        const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
+        const quoteTradedToday =
+            !isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate;
+        const livePrice = quoteTradedToday ? price : prevClose;
         if (isNaN(livePrice) || livePrice <= 0) continue;
 
         const liveValue = holding.quantity * livePrice;
@@ -559,11 +561,13 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             const prevClose = toNum(quote?.prev_close);
             const price = toNum(quote?.price);
             if (isNaN(prevClose) || prevClose <= 0) continue;
-            const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
+            const quoteTradedToday =
+                !isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate;
+            const livePrice = quoteTradedToday ? price : prevClose;
 
             prevCloseValue += holding.quantity * prevClose;
             liveValue += holding.quantity * livePrice;
-            if (!isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate) {
+            if (quoteTradedToday) {
                 hasPortfolioTradeToday = true;
             }
         }
@@ -571,10 +575,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         const benchmarkQuote = liveSnapshot.quotes?.[liveInputs.benchmarkTicker];
         const benchmarkPrevClose = toNum(benchmarkQuote?.prev_close);
         const benchmarkPrice = toNum(benchmarkQuote?.price);
-        const benchmarkLivePrice =
-            !isNaN(benchmarkPrice) && benchmarkPrice > 0 ? benchmarkPrice : benchmarkPrevClose;
         const benchmarkHasTradeToday =
             !isNaN(benchmarkPrice) && benchmarkPrice > 0 && timestampToNyDate(benchmarkQuote?.updated) === asOfDate;
+        const benchmarkLivePrice = benchmarkHasTradeToday ? benchmarkPrice : benchmarkPrevClose;
 
         const portfolioReturn = prevCloseValue > 0 ? liveValue / prevCloseValue - 1 : null;
         const benchmarkReturn =

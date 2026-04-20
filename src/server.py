@@ -93,8 +93,14 @@ def _first_valid_price(*values) -> float | None:
     return None
 
 
-def _resolve_live_price(quote: dict) -> float | None:
-    return _first_valid_price(quote.get("price"), quote.get("prev_close"))
+def _resolve_live_price(quote: dict, as_of_date: str | None = None) -> float | None:
+    price = _valid_price(quote.get("price"))
+    prev_close = _valid_price(quote.get("prev_close"))
+    if as_of_date is not None:
+        if price is not None and _timestamp_to_ny_date(quote.get("updated")) == as_of_date:
+            return price
+        return prev_close
+    return _first_valid_price(price, prev_close)
 
 
 def _timestamp_to_ny_date(value) -> str | None:
@@ -140,6 +146,18 @@ def _snapshot_price(item: dict) -> tuple[float | None, int | None]:
 
 def _quote_has_trade_today(quote: dict, as_of_date: str) -> bool:
     return _valid_price(quote.get("price")) is not None and _timestamp_to_ny_date(quote.get("updated")) == as_of_date
+
+
+def _now_timestamp_ms() -> int:
+    return int(datetime.now(ZoneInfo("UTC")).timestamp() * 1000)
+
+
+def _stream_trade_updated_at(event: dict) -> int | str:
+    for key in ("t", "sip_timestamp", "participant_timestamp", "timestamp"):
+        value = event.get(key)
+        if value not in (None, ""):
+            return value
+    return _now_timestamp_ms()
 
 
 def _poll_status_message() -> str:
@@ -362,7 +380,7 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
     for holding in holdings:
         quote = quotes.get(holding["ticker"]) or {}
         prev_close = _valid_price(quote.get("prev_close"))
-        live_price = _resolve_live_price(quote)
+        live_price = _resolve_live_price(quote, as_of_date)
         if prev_close is None or live_price is None:
             continue
 
@@ -375,7 +393,7 @@ def _compute_live_snapshot(holdings: list[dict], benchmark_ticker: str, quotes: 
 
     benchmark_quote = quotes.get(benchmark_ticker) or {}
     benchmark_prev_close = _valid_price(benchmark_quote.get("prev_close"))
-    benchmark_live_price = _resolve_live_price(benchmark_quote)
+    benchmark_live_price = _resolve_live_price(benchmark_quote, as_of_date)
     benchmark_has_trade_today = _quote_has_trade_today(benchmark_quote, as_of_date)
 
     portfolio_return = None
@@ -528,6 +546,10 @@ def _refresh_weights_rows(rows: list[dict], quotes: dict) -> list[dict]:
         return rows
 
     live_snapshot = _compute_live_snapshot(holdings, "SPY", quotes)
+    if not live_snapshot or not live_snapshot.get("portfolio_has_trade_today"):
+        return rows
+
+    as_of_date = live_snapshot["as_of_date"]
     total_live_value = live_snapshot["total_live_value"] if live_snapshot else 0
     live_value_by_ticker = live_snapshot["live_value_by_ticker"] if live_snapshot else {}
 
@@ -539,7 +561,7 @@ def _refresh_weights_rows(rows: list[dict], quotes: dict) -> list[dict]:
         basis_approx = _to_float(row.get("_BasisApprox"))
         quote = quotes.get(ticker) or {}
         prev_close = _valid_price(quote.get("prev_close"))
-        live_price = _resolve_live_price(quote)
+        live_price = _resolve_live_price(quote, as_of_date)
 
         if total_live_value > 0 and "Portfolio Weight (%)" in next_row and ticker in live_value_by_ticker:
             next_row["Portfolio Weight (%)"] = f"{100 * live_value_by_ticker[ticker] / total_live_value:.2f}%"
@@ -629,7 +651,7 @@ def _stream_polygon_stock_feed(tickers: list[str], emit, stop_event: threading.E
                         if event.get("ev") == "T" and event.get("sym") in tickers:
                             updates[event["sym"]] = {
                                 "price": event.get("p"),
-                                "updated": event.get("t"),
+                                "updated": _stream_trade_updated_at(event),
                             }
                         elif event.get("ev") == "status":
                             status = str(event.get("status", "")).lower()

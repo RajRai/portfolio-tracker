@@ -45,6 +45,42 @@ const toNum = (v) => {
     return isNaN(n) ? NaN : n;
 };
 
+const nyDateString = () => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
+const timestampToNyDate = (value) => {
+    if (value == null || value === "") return null;
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return null;
+
+    const absTs = Math.abs(raw);
+    const timestampMs =
+        absTs >= 1e17 ? raw / 1e6 :
+            absTs >= 1e14 ? raw / 1e3 :
+                absTs >= 1e11 ? raw :
+                    raw * 1000;
+
+    const date = new Date(timestampMs);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
 const parseLiveHoldings = (csvText) =>
     Papa.parse(csvText, { header: true }).data
         .filter((row) => row && Object.values(row).some((v) => v?.trim()))
@@ -53,6 +89,11 @@ const parseLiveHoldings = (csvText) =>
             quantity: toNum(row._Quantity),
         }))
         .filter((row) => row.ticker && !isNaN(row.quantity) && row.quantity > 0);
+
+const normalizeIncomingQuote = (quote, transport) => ({
+    ...quote,
+    updated: transport === "stream" ? Date.now() : quote?.updated,
+});
 
 const POLL_LIVE_MESSAGE = "Live prices: updating every 5 seconds";
 const STREAM_LIVE_MESSAGE = "Live prices: updating live";
@@ -202,6 +243,8 @@ export default function App() {
         });
 
         const updateAccountReturns = () => {
+            const asOfDate = nyDateString();
+
             setAccountDailyReturns((prev) => {
                 let changed = false;
                 const next = { ...prev };
@@ -211,19 +254,26 @@ export default function App() {
 
                     let prevCloseValue = 0;
                     let liveValue = 0;
+                    let hasTradeToday = false;
 
                     for (const holding of config.liveHoldings) {
                         const quote = quotesRef.current[holding.ticker];
                         const prevClose = toNum(quote?.prev_close);
                         const price = toNum(quote?.price);
                         if (isNaN(prevClose) || prevClose <= 0) continue;
-                        const livePrice = !isNaN(price) && price > 0 ? price : prevClose;
+                        const quoteTradedToday =
+                            !isNaN(price) && price > 0 && timestampToNyDate(quote?.updated) === asOfDate;
+                        const livePrice = quoteTradedToday ? price : prevClose;
 
                         prevCloseValue += holding.quantity * prevClose;
                         liveValue += holding.quantity * livePrice;
+
+                        if (quoteTradedToday) {
+                            hasTradeToday = true;
+                        }
                     }
 
-                    if (prevCloseValue <= 0) continue;
+                    if (prevCloseValue <= 0 || !hasTradeToday) continue;
 
                     const nextDailyReturn = liveValue / prevCloseValue - 1;
                     if (next[accountId] !== nextDailyReturn) {
@@ -267,29 +317,31 @@ export default function App() {
 
             if (!payload.quotes) return;
 
+            const nextQuotes = { ...quotesRef.current };
             for (const [ticker, quote] of Object.entries(payload.quotes)) {
-                quotesRef.current[ticker] = {
-                    ...quotesRef.current[ticker],
-                    ...quote,
+                nextQuotes[ticker] = {
+                    ...nextQuotes[ticker],
+                    ...normalizeIncomingQuote(quote, payload.transport),
                 };
             }
+            quotesRef.current = nextQuotes;
 
             if (payload.transport === "stream") {
                 liveStore.publish({
                     status: "stream",
                     message: STREAM_LIVE_MESSAGE,
-                    quotes: quotesRef.current,
+                    quotes: nextQuotes,
                 });
             } else if (payload.transport === "poll") {
                 liveStore.publish({
                     status: "poll",
                     message: POLL_LIVE_MESSAGE,
-                    quotes: quotesRef.current,
+                    quotes: nextQuotes,
                 });
             } else {
                 liveStore.publish((prev) => ({
                     ...prev,
-                    quotes: quotesRef.current,
+                    quotes: nextQuotes,
                 }));
             }
 
