@@ -155,11 +155,67 @@ const withLiveCompoundedReturn = (series, liveReturn, asOfDate) => {
     return upsertSeriesPoint(next, livePoint);
 };
 
-const clampForMultiple = (value) => {
-    if (value == null) return value;
-    if (value < 0 && value > -0.001) return -0.001;
-    if (value >= 0 && value < 0.001) return 0.001;
-    return value;
+const computeDailyAlphaPayload = (portfolioDaily, benchmarkDaily) => {
+    const portfolioByDate = new Map(
+        (portfolioDaily || [])
+            .filter((point) => point?.t && Number.isFinite(point?.v))
+            .map((point) => [point.t, point.v])
+    );
+    const benchmarkByDate = new Map(
+        (benchmarkDaily || [])
+            .filter((point) => point?.t && Number.isFinite(point?.v))
+            .map((point) => [point.t, point.v])
+    );
+    const sharedDates = [...portfolioByDate.keys()]
+        .filter((date) => benchmarkByDate.has(date))
+        .sort();
+
+    if (!sharedDates.length) {
+        return { beta: 0, daily: [] };
+    }
+
+    const benchmarkReturns = sharedDates.map((date) => benchmarkByDate.get(date));
+    const portfolioReturns = sharedDates.map((date) => portfolioByDate.get(date));
+    const benchmarkMean =
+        benchmarkReturns.reduce((sum, value) => sum + value, 0) / benchmarkReturns.length;
+    const portfolioMean =
+        portfolioReturns.reduce((sum, value) => sum + value, 0) / portfolioReturns.length;
+    const variance = benchmarkReturns.reduce(
+        (sum, value) => sum + (value - benchmarkMean) ** 2,
+        0
+    );
+    const beta =
+        variance <= 1e-12
+            ? 0
+            : benchmarkReturns.reduce(
+                (sum, value, index) =>
+                    sum + (value - benchmarkMean) * (portfolioReturns[index] - portfolioMean),
+                0
+            ) / variance;
+
+    const daily = [];
+    const cumulative = [];
+    let running = 1;
+    for (const date of sharedDates) {
+        const alpha = portfolioByDate.get(date) - beta * benchmarkByDate.get(date);
+        daily.push({ t: date, v: alpha });
+        running *= 1 + alpha;
+        cumulative.push({ t: date, v: running - 1 });
+    }
+
+    return {
+        beta,
+        daily,
+        cumulative,
+    };
+};
+
+const withComputedAlpha = (payload) => {
+    if (!payload) return payload;
+    return {
+        ...payload,
+        alpha: computeDailyAlphaPayload(payload.portfolio?.daily, payload.benchmark?.daily),
+    };
 };
 
 const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
@@ -194,14 +250,13 @@ const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
 };
 
 const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
-    if (!payload || !liveReturns?.asOfDate) return payload;
+    if (!payload || !liveReturns?.asOfDate) return withComputedAlpha(payload);
 
     const next = {
         ...payload,
         portfolio: { ...payload.portfolio },
         benchmark: { ...payload.benchmark },
         spread: { ...payload.spread },
-        multiple: { ...payload.multiple },
     };
 
     if (liveReturns.portfolioReturn != null) {
@@ -253,14 +308,9 @@ const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
                 liveSpread,
                 liveReturns.asOfDate
             );
-            next.multiple.daily = upsertSeriesPoint(payload.multiple.daily, {
-                t: liveReturns.asOfDate,
-                v: clampForMultiple(liveReturns.portfolioReturn) / clampForMultiple(liveReturns.benchmarkReturn),
-            });
         } else {
             next.spread.daily = carryLatestPointToDate(payload.spread.daily, liveReturns.asOfDate);
             next.spread.cumulative = rollForwardSeries(payload.spread.cumulative, liveReturns.asOfDate);
-            next.multiple.daily = carryLatestPointToDate(payload.multiple.daily, liveReturns.asOfDate);
         }
     }
 
@@ -273,7 +323,18 @@ const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
         )
         : rollForwardWeights(payload.weights, liveReturns.asOfDate);
 
-    return next;
+    const alphaPayload = computeDailyAlphaPayload(next.portfolio?.daily, next.benchmark?.daily);
+    if (!(liveReturns.portfolioHasTradeToday || liveReturns.benchmarkHasTradeToday)) {
+        alphaPayload.cumulative = rollForwardSeries(
+            payload.alpha?.cumulative || alphaPayload.cumulative,
+            liveReturns.asOfDate
+        );
+    }
+
+    return {
+        ...next,
+        alpha: alphaPayload,
+    };
 };
 
 // ✅ Memoized performance table with scoped styles (beats MUI overrides)
@@ -471,7 +532,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             cum: React.createRef(),
             daily: React.createRef(),
             spreadDaily: React.createRef(),
-            multipleDaily: React.createRef(),
+            alphaDaily: React.createRef(),
+            alphaCum: React.createRef(),
             spreadCum: React.createRef(),
             weights: React.createRef(),
         }),
@@ -669,10 +731,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             uirevision: "dashboard",
         };
 
-        const multipleDaily = payload.multiple.daily;
-        const portfolioDailyByDate = Object.fromEntries(
-            payload.portfolio.daily.map((point) => [point.t, point.v])
-        );
+        const alphaDaily = payload.alpha.daily;
+        const alphaCum = payload.alpha.cumulative;
 
         const weightsTraces = [];
         for (const s of payload.weights) {
@@ -763,24 +823,36 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 ],
                 layout: { ...baseLayout, yaxis: { tickformat: "+.2%", title: "Excess Return" } },
             },
-            multipleDaily: {
+            alphaDaily: {
                 traces: [
                     {
-                        name: "Return Multiple",
+                        name: "Daily Alpha",
                         type: "bar",
-                        x: arrX(multipleDaily),
-                        y: arrY(multipleDaily),
+                        x: arrX(alphaDaily),
+                        y: arrY(alphaDaily),
                         marker: {
-                            color: multipleDaily.map((p) => (portfolioDailyByDate[p.t] > 0 ? "#3ac569" : "#e74c3c")),
+                            color: alphaDaily.map((p) => (p.v >= 0 ? "#3ac569" : "#e74c3c")),
                         },
                     },
                 ],
-                layout: { ...baseLayout, yaxis: { tickformat: "+.2f", title: "Return Multiple" } },
+                layout: { ...baseLayout, yaxis: { tickformat: "+.2%", title: "Daily Alpha" } },
+            },
+            alphaCum: {
+                traces: [
+                    {
+                        name: "Cumulative Alpha",
+                        type: "scatter",
+                        mode: "lines",
+                        x: arrX(alphaCum),
+                        y: arrY(alphaCum),
+                    },
+                ],
+                layout: { ...baseLayout, yaxis: { tickformat: "+.2%", title: "Cumulative Alpha" } },
             },
             spreadCum: {
                 traces: [
                     {
-                        name: "Cumulative Alpha",
+                        name: "Cumulative Excess Return",
                         type: "scatter",
                         mode: "lines",
                         x: arrX(payload.spread.cumulative),
@@ -800,7 +872,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     useEffect(() => {
         if (!data || !Plotly) return;
 
-        const specs = buildChartSpecs(data);
+        const specs = buildChartSpecs(withComputedAlpha(data));
         Object.entries(specs).forEach(([key, spec]) => {
             const ref = charts[key];
             if (!ref?.current) return;
@@ -1050,8 +1122,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             {renderSection("Cumulative Performance vs Benchmark", charts.cum)}
             {renderSection("Daily Returns", charts.daily)}
             {renderSection("Daily Out/Under-Performance", charts.spreadDaily)}
-            {renderSection("Daily Return Multiple vs Market", charts.multipleDaily)}
+            {renderSection("Daily Alpha", charts.alphaDaily)}
             {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
+            {renderSection("Cumulative Alpha", charts.alphaCum)}
             {renderSection("Holdings Over Time (Weights)", charts.weights)}
 
             <Box sx={{ mt: 8 }}>

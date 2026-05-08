@@ -44,6 +44,30 @@ def add_missing_zeros(returns: pd.Series) -> pd.Series:
     return pd.Series(out_vals, index=full_range, name="Date")
 
 
+def _regression_beta(portfolio_returns: pd.Series, benchmark_returns: pd.Series) -> float:
+    aligned = pd.concat(
+        [
+            portfolio_returns.rename("portfolio").astype(float),
+            benchmark_returns.rename("benchmark").astype(float),
+        ],
+        axis=1,
+        join="inner",
+    ).dropna()
+
+    if aligned.empty:
+        return 0.0
+
+    benchmark = aligned["benchmark"]
+    portfolio = aligned["portfolio"]
+    benchmark_mean = benchmark.mean()
+    variance = ((benchmark - benchmark_mean) ** 2).sum()
+    if np.isclose(variance, 0.0):
+        return 0.0
+
+    covariance = ((benchmark - benchmark_mean) * (portfolio - portfolio.mean())).sum()
+    return float(covariance / variance)
+
+
 def build_remaining_lot_book(trades: pd.DataFrame, symbols: list[str]) -> dict[str, list[dict]]:
     lot_book = {sym: [] for sym in symbols}
     eps = sys.float_info.epsilon
@@ -302,13 +326,9 @@ def main():
         # Daily relative-to-benchmark series
         daily_spread = (port_ret - bench_ret)
         cum_spread   = (1.0 + daily_spread).cumprod() - 1.0  # relative cumulative out/under-performance
-
-        def _clamp_for_multiple(s: pd.Series):
-            s = s.mask((s < 0) & (s > -0.001), -0.001)
-            s = s.mask((s >= 0) & (s < 0.001), 0.001)
-            return s
-
-        daily_multiple = _clamp_for_multiple(port_ret).div(_clamp_for_multiple(bench_ret))
+        beta = _regression_beta(port_ret, bench_ret)
+        daily_alpha = port_ret - beta * bench_ret
+        cum_alpha = (1.0 + daily_alpha).cumprod() - 1.0
 
         # Weights time series (already computed): `weights`
         weights_top = weights.copy()
@@ -345,8 +365,10 @@ def main():
                 "daily": _series_to_pairs(daily_spread),
                 "cumulative": _series_to_pairs(cum_spread),
             },
-            "multiple": {
-                "daily": _series_to_pairs(daily_multiple),
+            "alpha": {
+                "beta": beta,
+                "daily": _series_to_pairs(daily_alpha),
+                "cumulative": _series_to_pairs(cum_alpha),
             },
             "weights": _frame_to_stacked_list(weights_top),
         }

@@ -323,14 +323,53 @@ def _with_live_compounded_return(
     )
 
 
-def _clamp_for_multiple(value: float | None) -> float | None:
-    if value is None:
-        return value
-    if value < 0 and value > -0.001:
-        return -0.001
-    if value >= 0 and value < 0.001:
-        return 0.001
-    return value
+def _build_daily_alpha_payload(portfolio_daily: list[dict], benchmark_daily: list[dict]) -> dict:
+    portfolio_by_date = {}
+    for point in portfolio_daily or []:
+        date = point.get("t")
+        value = _to_float(point.get("v"))
+        if date and not math.isnan(value):
+            portfolio_by_date[date] = value
+
+    benchmark_by_date = {}
+    for point in benchmark_daily or []:
+        date = point.get("t")
+        value = _to_float(point.get("v"))
+        if date and not math.isnan(value):
+            benchmark_by_date[date] = value
+
+    shared_dates = sorted(set(portfolio_by_date) & set(benchmark_by_date))
+    if not shared_dates:
+        return {"beta": 0.0, "daily": []}
+
+    benchmark_values = [benchmark_by_date[date] for date in shared_dates]
+    portfolio_values = [portfolio_by_date[date] for date in shared_dates]
+    benchmark_mean = sum(benchmark_values) / len(benchmark_values)
+    portfolio_mean = sum(portfolio_values) / len(portfolio_values)
+    variance = sum((value - benchmark_mean) ** 2 for value in benchmark_values)
+    if variance <= 1e-12:
+        beta = 0.0
+    else:
+        covariance = sum(
+            (bench - benchmark_mean) * (port - portfolio_mean)
+            for bench, port in zip(benchmark_values, portfolio_values)
+        )
+        beta = covariance / variance
+
+    daily = []
+    cumulative = []
+    running = 1.0
+    for date in shared_dates:
+        alpha = portfolio_by_date[date] - beta * benchmark_by_date[date]
+        daily.append({"t": date, "v": alpha})
+        running *= 1 + alpha
+        cumulative.append({"t": date, "v": running - 1})
+
+    return {
+        "beta": beta,
+        "daily": daily,
+        "cumulative": cumulative,
+    }
 
 
 def _read_csv_rows(path: Path) -> tuple[list[str], list[dict]]:
@@ -501,7 +540,6 @@ def _apply_live_payload(payload: dict, holdings: list[dict], benchmark_ticker: s
     if portfolio_return is not None and benchmark_return is not None:
         spread = portfolio_return - benchmark_return
         next_payload.setdefault("spread", {})
-        next_payload.setdefault("multiple", {})
         if portfolio_has_trade_today or benchmark_has_trade_today:
             next_payload["spread"]["daily"] = _upsert_series_point(
                 next_payload["spread"].get("daily", []),
@@ -512,13 +550,6 @@ def _apply_live_payload(payload: dict, holdings: list[dict], benchmark_ticker: s
                 spread,
                 as_of_date,
             )
-            next_payload["multiple"]["daily"] = _upsert_series_point(
-                next_payload["multiple"].get("daily", []),
-                {
-                    "t": as_of_date,
-                    "v": _clamp_for_multiple(portfolio_return) / _clamp_for_multiple(benchmark_return),
-                },
-            )
         else:
             next_payload["spread"]["daily"] = _carry_latest_point_to_date(
                 next_payload["spread"].get("daily", []),
@@ -528,10 +559,16 @@ def _apply_live_payload(payload: dict, holdings: list[dict], benchmark_ticker: s
                 next_payload["spread"].get("cumulative", []),
                 as_of_date,
             )
-            next_payload["multiple"]["daily"] = _carry_latest_point_to_date(
-                next_payload["multiple"].get("daily", []),
-                as_of_date,
-            )
+
+    next_payload["alpha"] = _build_daily_alpha_payload(
+        next_payload.get("portfolio", {}).get("daily", []),
+        next_payload.get("benchmark", {}).get("daily", []),
+    )
+    if not (portfolio_has_trade_today or benchmark_has_trade_today):
+        next_payload["alpha"]["cumulative"] = _roll_forward_series(
+            payload.get("alpha", {}).get("cumulative", []) or next_payload["alpha"]["cumulative"],
+            as_of_date,
+        )
 
     if portfolio_has_trade_today:
         next_payload["weights"] = _with_live_weights(next_payload.get("weights", []), live_snapshot)

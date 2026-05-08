@@ -132,20 +132,46 @@ def test_apply_live_payload_updates_latest_points(monkeypatch):
 
     payload = {
         "portfolio": {
-            "daily": [{"t": "2026-04-07", "v": 0.01}],
-            "equity": [{"t": "2026-04-07", "v": 1.01}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.03},
+                {"t": "2026-04-07", "v": 0.10},
+            ],
+            "equity": [
+                {"t": "2026-04-06", "v": 1.03},
+                {"t": "2026-04-07", "v": 1.133},
+            ],
         },
         "benchmark": {
             "ticker": "SPY",
-            "daily": [{"t": "2026-04-07", "v": 0.02}],
-            "equity": [{"t": "2026-04-07", "v": 1.02}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.01},
+                {"t": "2026-04-07", "v": 0.02},
+            ],
+            "equity": [
+                {"t": "2026-04-06", "v": 1.01},
+                {"t": "2026-04-07", "v": 1.0302},
+            ],
         },
         "spread": {
-            "daily": [{"t": "2026-04-07", "v": -0.01}],
-            "cumulative": [{"t": "2026-04-07", "v": -0.01}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.02},
+                {"t": "2026-04-07", "v": 0.08},
+            ],
+            "cumulative": [
+                {"t": "2026-04-06", "v": 0.02},
+                {"t": "2026-04-07", "v": 0.1016},
+            ],
         },
-        "multiple": {
-            "daily": [{"t": "2026-04-07", "v": 0.5}],
+        "alpha": {
+            "beta": 7.0,
+            "daily": [
+                {"t": "2026-04-06", "v": -0.04},
+                {"t": "2026-04-07", "v": -0.04},
+            ],
+            "cumulative": [
+                {"t": "2026-04-06", "v": -0.04},
+                {"t": "2026-04-07", "v": -0.0784},
+            ],
         },
         "weights": [
             {"name": "AAA", "points": [{"t": "2026-04-07", "v": 1.0}]},
@@ -165,10 +191,11 @@ def test_apply_live_payload_updates_latest_points(monkeypatch):
     assert refreshed["benchmark"]["daily"][-1]["v"] == pytest.approx(0.02)
     assert refreshed["spread"]["daily"][-1]["t"] == "2026-04-08"
     assert refreshed["spread"]["daily"][-1]["v"] == pytest.approx(0.08)
-    assert refreshed["multiple"]["daily"][-1]["t"] == "2026-04-08"
-    assert refreshed["multiple"]["daily"][-1]["v"] == pytest.approx(5.0)
+    assert refreshed["alpha"]["beta"] == pytest.approx(7.0)
+    assert refreshed["alpha"]["daily"][-1] == {"t": "2026-04-08", "v": pytest.approx(-0.04)}
+    assert refreshed["alpha"]["cumulative"][-1] == {"t": "2026-04-08", "v": pytest.approx(-0.115264)}
     assert refreshed["portfolio"]["equity"][-1]["t"] == "2026-04-08"
-    assert refreshed["portfolio"]["equity"][-1]["v"] == pytest.approx(1.111)
+    assert refreshed["portfolio"]["equity"][-1]["v"] == pytest.approx(1.2463)
     assert refreshed["weights"][0]["points"][-1] == {"t": "2026-04-08", "v": 1.0}
 
 
@@ -177,20 +204,46 @@ def test_apply_live_payload_rolls_forward_equity_without_recompounding(monkeypat
 
     payload = {
         "portfolio": {
-            "daily": [{"t": "2026-04-07", "v": 0.1}],
-            "equity": [{"t": "2026-04-07", "v": 1.1}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.03},
+                {"t": "2026-04-07", "v": 0.1},
+            ],
+            "equity": [
+                {"t": "2026-04-06", "v": 1.03},
+                {"t": "2026-04-07", "v": 1.133},
+            ],
         },
         "benchmark": {
             "ticker": "SPY",
-            "daily": [{"t": "2026-04-07", "v": 0.02}],
-            "equity": [{"t": "2026-04-07", "v": 1.02}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.01},
+                {"t": "2026-04-07", "v": 0.02},
+            ],
+            "equity": [
+                {"t": "2026-04-06", "v": 1.01},
+                {"t": "2026-04-07", "v": 1.0302},
+            ],
         },
         "spread": {
-            "daily": [{"t": "2026-04-07", "v": 0.08}],
-            "cumulative": [{"t": "2026-04-07", "v": 0.08}],
+            "daily": [
+                {"t": "2026-04-06", "v": 0.02},
+                {"t": "2026-04-07", "v": 0.08},
+            ],
+            "cumulative": [
+                {"t": "2026-04-06", "v": 0.02},
+                {"t": "2026-04-07", "v": 0.1016},
+            ],
         },
-        "multiple": {
-            "daily": [{"t": "2026-04-07", "v": 5.0}],
+        "alpha": {
+            "beta": 7.0,
+            "daily": [
+                {"t": "2026-04-06", "v": -0.04},
+                {"t": "2026-04-07", "v": -0.04},
+            ],
+            "cumulative": [
+                {"t": "2026-04-06", "v": -0.04},
+                {"t": "2026-04-07", "v": -0.0784},
+            ],
         },
         "weights": [
             {"name": "AAA", "points": [{"t": "2026-04-07", "v": 1.0}]},
@@ -204,13 +257,15 @@ def test_apply_live_payload_rolls_forward_equity_without_recompounding(monkeypat
 
     refreshed = server._apply_live_payload(payload, holdings, "SPY", quotes)
 
-    assert refreshed["portfolio"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.1)}]
-    assert refreshed["portfolio"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.1)}
-    assert refreshed["benchmark"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.02)}]
-    assert refreshed["benchmark"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.02)}
-    assert refreshed["spread"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(0.08)}]
-    assert refreshed["spread"]["cumulative"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.08)}
-    assert refreshed["multiple"]["daily"] == [{"t": "2026-04-08", "v": pytest.approx(5.0)}]
+    assert refreshed["portfolio"]["daily"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.1)}
+    assert refreshed["portfolio"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.133)}
+    assert refreshed["benchmark"]["daily"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.02)}
+    assert refreshed["benchmark"]["equity"][-1] == {"t": "2026-04-08", "v": pytest.approx(1.0302)}
+    assert refreshed["spread"]["daily"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.08)}
+    assert refreshed["spread"]["cumulative"][-1] == {"t": "2026-04-08", "v": pytest.approx(0.1016)}
+    assert refreshed["alpha"]["beta"] == pytest.approx(7.0)
+    assert refreshed["alpha"]["daily"][-1] == {"t": "2026-04-08", "v": pytest.approx(-0.04)}
+    assert refreshed["alpha"]["cumulative"][-1] == {"t": "2026-04-08", "v": pytest.approx(-0.0784)}
 
 
 def test_apply_live_payload_fills_non_trading_days_between_last_trade_and_today(monkeypatch):
@@ -218,20 +273,46 @@ def test_apply_live_payload_fills_non_trading_days_between_last_trade_and_today(
 
     payload = {
         "portfolio": {
-            "daily": [{"t": "2026-04-10", "v": 0.1}],
-            "equity": [{"t": "2026-04-10", "v": 1.1}],
+            "daily": [
+                {"t": "2026-04-09", "v": 0.03},
+                {"t": "2026-04-10", "v": 0.1},
+            ],
+            "equity": [
+                {"t": "2026-04-09", "v": 1.03},
+                {"t": "2026-04-10", "v": 1.133},
+            ],
         },
         "benchmark": {
             "ticker": "SPY",
-            "daily": [{"t": "2026-04-10", "v": 0.02}],
-            "equity": [{"t": "2026-04-10", "v": 1.02}],
+            "daily": [
+                {"t": "2026-04-09", "v": 0.01},
+                {"t": "2026-04-10", "v": 0.02},
+            ],
+            "equity": [
+                {"t": "2026-04-09", "v": 1.01},
+                {"t": "2026-04-10", "v": 1.0302},
+            ],
         },
         "spread": {
-            "daily": [{"t": "2026-04-10", "v": 0.08}],
-            "cumulative": [{"t": "2026-04-10", "v": 0.08}],
+            "daily": [
+                {"t": "2026-04-09", "v": 0.02},
+                {"t": "2026-04-10", "v": 0.08},
+            ],
+            "cumulative": [
+                {"t": "2026-04-09", "v": 0.02},
+                {"t": "2026-04-10", "v": 0.1016},
+            ],
         },
-        "multiple": {
-            "daily": [{"t": "2026-04-10", "v": 5.0}],
+        "alpha": {
+            "beta": 7.0,
+            "daily": [
+                {"t": "2026-04-09", "v": -0.04},
+                {"t": "2026-04-10", "v": -0.04},
+            ],
+            "cumulative": [
+                {"t": "2026-04-09", "v": -0.04},
+                {"t": "2026-04-10", "v": -0.0784},
+            ],
         },
         "weights": [
             {"name": "AAA", "points": [{"t": "2026-04-10", "v": 1.0}]},
@@ -246,24 +327,29 @@ def test_apply_live_payload_fills_non_trading_days_between_last_trade_and_today(
     refreshed = server._apply_live_payload(payload, holdings, "SPY", quotes)
 
     assert refreshed["portfolio"]["equity"][-2:] == [
-        {"t": "2026-04-11", "v": pytest.approx(1.1)},
-        {"t": "2026-04-12", "v": pytest.approx(1.1)},
+        {"t": "2026-04-11", "v": pytest.approx(1.133)},
+        {"t": "2026-04-12", "v": pytest.approx(1.133)},
     ]
     assert refreshed["portfolio"]["daily"][-2:] == [
         {"t": "2026-04-11", "v": pytest.approx(0.1)},
         {"t": "2026-04-12", "v": pytest.approx(0.1)},
     ]
-    assert refreshed["benchmark"]["daily"] == [
+    assert refreshed["benchmark"]["daily"][-2:] == [
         {"t": "2026-04-11", "v": pytest.approx(0.02)},
         {"t": "2026-04-12", "v": pytest.approx(0.02)},
     ]
-    assert refreshed["spread"]["daily"] == [
+    assert refreshed["spread"]["daily"][-2:] == [
         {"t": "2026-04-11", "v": pytest.approx(0.08)},
         {"t": "2026-04-12", "v": pytest.approx(0.08)},
     ]
-    assert refreshed["multiple"]["daily"] == [
-        {"t": "2026-04-11", "v": pytest.approx(5.0)},
-        {"t": "2026-04-12", "v": pytest.approx(5.0)},
+    assert refreshed["alpha"]["beta"] == pytest.approx(7.0)
+    assert refreshed["alpha"]["daily"][-2:] == [
+        {"t": "2026-04-11", "v": pytest.approx(-0.04)},
+        {"t": "2026-04-12", "v": pytest.approx(-0.04)},
+    ]
+    assert refreshed["alpha"]["cumulative"][-2:] == [
+        {"t": "2026-04-11", "v": pytest.approx(-0.0784)},
+        {"t": "2026-04-12", "v": pytest.approx(-0.0784)},
     ]
     assert refreshed["weights"][0]["points"][-2:] == [
         {"t": "2026-04-11", "v": pytest.approx(1.0)},
