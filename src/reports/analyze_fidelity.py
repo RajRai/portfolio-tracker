@@ -68,45 +68,169 @@ def _regression_beta(portfolio_returns: pd.Series, benchmark_returns: pd.Series)
     return float(covariance / variance)
 
 
+def _lot_holding_start(lot: dict) -> pd.Timestamp:
+    return pd.Timestamp(lot.get("tax_date", lot["date"])).normalize()
+
+
+def _is_long_term_lot(lot: dict, sale_date: pd.Timestamp) -> bool:
+    sale_day = pd.Timestamp(sale_date).normalize()
+    return sale_day > _lot_holding_start(lot) + pd.DateOffset(years=1)
+
+
+def _lot_sale_priority(lot: dict, sale_date: pd.Timestamp, sale_price: float) -> tuple[int, float, pd.Timestamp]:
+    realized_gain_per_share = sale_price - float(lot["price"])
+    return (
+        0 if _is_long_term_lot(lot, sale_date) else 1,
+        realized_gain_per_share,
+        lot["date"],
+    )
+
+
+def _apply_wash_adjustment_to_existing_lots(
+    lots: list[dict],
+    sale_date: pd.Timestamp,
+    loss_qty: float,
+    loss_per_share: float,
+    sold_tax_date: pd.Timestamp,
+    eps: float,
+) -> float:
+    if loss_qty <= eps or loss_per_share <= eps:
+        return 0.0
+
+    remaining = loss_qty
+    window_start = pd.Timestamp(sale_date).normalize() - pd.Timedelta(days=30)
+    sale_day = pd.Timestamp(sale_date).normalize()
+    updated_lots = []
+
+    for lot in lots:
+        lot_day = pd.Timestamp(lot["date"]).normalize()
+        if (
+            remaining > eps
+            and lot["qty"] > eps
+            and window_start <= lot_day <= sale_day
+        ):
+            matched = min(remaining, lot["qty"])
+            adjusted_lot = lot.copy()
+            adjusted_lot["qty"] = matched
+            adjusted_lot["price"] = float(lot["price"]) + loss_per_share
+            adjusted_lot["tax_date"] = min(_lot_holding_start(lot), pd.Timestamp(sold_tax_date).normalize())
+            updated_lots.append(adjusted_lot)
+
+            leftover_qty = lot["qty"] - matched
+            if leftover_qty > eps:
+                remaining_lot = lot.copy()
+                remaining_lot["qty"] = leftover_qty
+                updated_lots.append(remaining_lot)
+
+            remaining -= matched
+            continue
+
+        updated_lots.append(lot)
+
+    lots[:] = updated_lots
+    return remaining
+
+
 def build_remaining_lot_book(trades: pd.DataFrame, symbols: list[str]) -> dict[str, list[dict]]:
     lot_book = {sym: [] for sym in symbols}
+    pending_washes = {sym: [] for sym in symbols}
     eps = sys.float_info.epsilon
+    ordered_trades = (
+        trades.reset_index()
+        .rename(columns={"index": "_trade_order"})
+        .sort_values(["Run Date", "_trade_order"], kind="stable")
+    )
 
-    for _, row in trades.sort_values("Run Date").iterrows():
+    for _, row in ordered_trades.iterrows():
         sym = row["symbol"]
+        trade_date = row["Run Date"]
         qty = float(row["quantity"])
         price = float(row["price"])
 
         if sym not in lot_book or abs(qty) <= eps:
             continue
 
+        pending_washes[sym] = [
+            pending
+            for pending in pending_washes[sym]
+            if pending["qty"] > eps and pd.Timestamp(trade_date).normalize() <= pending["expires"]
+        ]
+
         if qty > 0:
-            lot_book[sym].append({
-                "date": row["Run Date"],
-                "qty": qty,
-                "price": price,
-            })
+            remaining_qty = qty
+            buy_lots = []
+
+            for pending in pending_washes[sym]:
+                if remaining_qty <= eps:
+                    break
+
+                matched = min(remaining_qty, pending["qty"])
+                if matched <= eps:
+                    continue
+
+                buy_lots.append({
+                    "date": trade_date,
+                    "tax_date": min(pd.Timestamp(trade_date).normalize(), pending["tax_date"]),
+                    "qty": matched,
+                    "price": price + pending["loss_per_share"],
+                })
+                pending["qty"] -= matched
+                remaining_qty -= matched
+
+            if remaining_qty > eps:
+                buy_lots.append({
+                    "date": trade_date,
+                    "tax_date": pd.Timestamp(trade_date).normalize(),
+                    "qty": remaining_qty,
+                    "price": price,
+                })
+
+            lot_book[sym].extend(buy_lots)
+            pending_washes[sym] = [pending for pending in pending_washes[sym] if pending["qty"] > eps]
             continue
 
         sell_qty = -qty
         lots = lot_book[sym]
-        loss_lots = sorted(
-            [lot for lot in lots if lot["price"] > price + eps],
-            key=lambda lot: (-lot["price"], lot["date"]),
+        prioritized_lots = sorted(
+            lots,
+            key=lambda lot: _lot_sale_priority(lot, trade_date, price),
         )
-        gain_lots = sorted(
-            [lot for lot in lots if lot["price"] <= price + eps],
-            key=lambda lot: lot["date"],
-        )
+        sold_lots = []
 
-        for lot in [*loss_lots, *gain_lots]:
+        for lot in prioritized_lots:
             if sell_qty <= eps:
                 break
             matched = min(sell_qty, lot["qty"])
             lot["qty"] -= matched
             sell_qty -= matched
+            sold_lots.append({
+                "qty": matched,
+                "price": float(lot["price"]),
+                "tax_date": _lot_holding_start(lot),
+            })
 
         lot_book[sym] = [lot for lot in lots if lot["qty"] > eps]
+        lots = lot_book[sym]
+
+        for sold_lot in sold_lots:
+            if sold_lot["price"] <= price + eps:
+                continue
+
+            unmatched_loss_qty = _apply_wash_adjustment_to_existing_lots(
+                lots,
+                trade_date,
+                sold_lot["qty"],
+                sold_lot["price"] - price,
+                sold_lot["tax_date"],
+                eps,
+            )
+            if unmatched_loss_qty > eps:
+                pending_washes[sym].append({
+                    "expires": pd.Timestamp(trade_date).normalize() + pd.Timedelta(days=30),
+                    "loss_per_share": sold_lot["price"] - price,
+                    "qty": unmatched_loss_qty,
+                    "tax_date": sold_lot["tax_date"],
+                })
 
     return lot_book
 
@@ -397,7 +521,7 @@ def main():
 
                 current_lot_qty_df.loc[lot_date:, sym] += lot["qty"]
                 if lot["price"] > eps:
-                    current_lot_basis.loc[sym] += lot["qty"] * float(sym_prices.loc[lot_date])
+                    current_lot_basis.loc[sym] += lot["qty"] * float(lot["price"])
 
         current_lot_value_df = current_lot_qty_df * prices.reindex(current_lot_qty_df.index)
         current_quantities = current_lot_qty_df.loc[latest_date].reindex(current_weights.index)
