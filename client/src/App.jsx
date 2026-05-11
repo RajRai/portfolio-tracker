@@ -578,7 +578,10 @@ export default function App() {
             <Box
                 sx={{
                     flex: 1,
-                    overflow: "auto",
+                    minHeight: 0,
+                    minWidth: 0,
+                    display: "flex",
+                    overflow: page === "home" ? "hidden" : "auto",
                     bgcolor: theme.palette.background.default,
                 }}
             >

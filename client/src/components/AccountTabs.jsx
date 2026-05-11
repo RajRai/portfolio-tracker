@@ -19,6 +19,7 @@ function AccountTabs({ account, liveStore }) {
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
     const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
+    const tableTab = tab === "holdings" || tab === "transactions";
 
     // When account changes, reset inner tab + track
     useEffect(() => {
@@ -83,7 +84,16 @@ function AccountTabs({ account, liveStore }) {
             </Box>
 
             {/* ===== Scrollable Content Area ===== */}
-            <Box sx={{ flex: 1, overflow: "auto", minHeight: 0, minWidth: 0 }}>
+            <Box
+                sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                    overflow: tableTab ? "hidden" : "auto",
+                    display: "flex",
+                    flexDirection: "column",
+                }}
+            >
                 <PortfolioAbout
                     about={account.about}
                     leftSlot={
@@ -119,9 +129,10 @@ function AccountTabs({ account, liveStore }) {
                         live
                         liveStore={liveStore}
                         onHeaderTextChange={setHoldingsHeaderText}
+                        fillHeight
                     />
                 )}
-                {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" />}
+                {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" fillHeight />}
             </Box>
         </Box>
     );

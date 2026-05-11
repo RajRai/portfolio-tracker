@@ -58,13 +58,16 @@ const timestampToNyDate = (value) => {
 
 const formatPct = (value) => (isNaN(value) ? EM_DASH : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`);
 
-export default function CSVTable({ src, live = false, liveStore, onHeaderTextChange }) {
+export default function CSVTable({ src, live = false, liveStore, onHeaderTextChange, fillHeight = false }) {
     const theme = useTheme();
     const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+    const rowHeight = isMobile ? 32 : 40;
+    const columnHeaderHeight = isMobile ? 34 : 40;
     const shellBackground =
         theme.palette.mode === "dark"
             ? alpha(theme.palette.common.black, 0.18)
             : alpha(theme.palette.background.paper, 0.98);
+    const headerBackground = theme.palette.background.paper;
     const chromeBackground =
         theme.palette.mode === "dark"
             ? alpha(theme.palette.common.black, 0.34)
@@ -122,7 +125,8 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                         ? isMobile ? 90 : 132
                         : tickerColumn && isMobile
                             ? 72
-                        : isMobile ? compactMinWidth : 120;
+                            : isMobile ? compactMinWidth : 120;
+
                     return {
                         field: h,
                         headerName: h.replace(/_/g, " "),
@@ -249,11 +253,16 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
         );
     }
 
+    const fittedTableHeight = columnHeaderHeight + rows.length * rowHeight + 2;
+
     return (
         <Paper
             sx={{
                 width: { xs: "100%", sm: "92%" },
                 maxWidth: "100%",
+                ...(fillHeight
+                    ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+                    : { height: fittedTableHeight }),
                 boxSizing: "border-box",
                 mx: "auto",
                 mt: { xs: 1, sm: 2 },
@@ -266,33 +275,35 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
             elevation={3}
         >
             <DataGrid
-                autoHeight
                 rows={rows}
                 columns={columns}
                 disableRowSelectionOnClick
                 disableColumnMenu
-                hideFooterSelectedRowCount
+                hideFooter
                 density={isMobile ? "compact" : "standard"}
-                rowHeight={isMobile ? 32 : 40}
-                columnHeaderHeight={isMobile ? 34 : 40}
-                pageSizeOptions={[10, 25, 50]}
+                rowHeight={rowHeight}
+                columnHeaderHeight={columnHeaderHeight}
+                pageSizeOptions={[{ value: -1, label: "All" }]}
                 initialState={{
-                    pagination: { paginationModel: { pageSize: 25, page: 0 } },
+                    pagination: { paginationModel: { pageSize: -1, page: 0 } },
                 }}
                 sx={{
                     minWidth: 0,
+                    ...(fillHeight ? { flex: 1 } : { height: "100%" }),
                     border: 0,
                     borderRadius: 0,
                     backgroundColor: "transparent",
-                    "--DataGrid-containerBackground": chromeBackground,
-                    "--DataGrid-pinnedBackground": chromeBackground,
+                    "--DataGrid-containerBackground": headerBackground,
+                    "--DataGrid-pinnedBackground": headerBackground,
                     "--DataGrid-rowBorderColor": edgeColor,
-                    "& .MuiDataGrid-filler, & .MuiDataGrid-scrollbarFiller, & .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders": {
+                    "& .MuiDataGrid-filler, & .MuiDataGrid-scrollbarFiller": {
                         backgroundColor: chromeBackground,
+                    },
+                    "& .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders": {
+                        backgroundColor: headerBackground,
                         color: theme.palette.text.primary,
                     },
                     "& .MuiDataGrid-columnHeaders": {
-                        backgroundColor: chromeBackground,
                         fontWeight: 700,
                         borderBottom: `1px solid ${edgeColor}`,
                     },
@@ -303,7 +314,7 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                         borderColor: edgeColor,
                     },
                     "& .MuiDataGrid-row:hover": {
-                        backgroundColor: (theme) => theme.palette.action.hover,
+                        backgroundColor: theme.palette.action.hover,
                     },
                     "& .MuiDataGrid-virtualScroller": {
                         overflowX: "auto",
@@ -320,31 +331,16 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                         fontSize: isMobile ? "0.72rem" : "0.875rem",
                         fontWeight: 700,
                     },
-                    "& .MuiDataGrid-footerContainer": {
-                        minHeight: isMobile ? 44 : 52,
-                        borderTop: `1px solid ${edgeColor}`,
-                        backgroundColor: chromeBackground,
-                        color: theme.palette.text.primary,
-                    },
-                    "& .MuiTablePagination-toolbar": {
-                        minHeight: isMobile ? 44 : 52,
-                        px: isMobile ? 0.5 : 1.5,
-                        backgroundColor: chromeBackground,
-                        color: theme.palette.text.primary,
-                    },
-                    "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows, & .MuiTablePagination-selectIcon, & .MuiIconButton-root": {
-                        color: theme.palette.text.primary,
-                    },
                     "& .MuiDataGrid-cell.gl-pos": {
-                        color: (theme) => theme.palette.success.main,
+                        color: theme.palette.success.main,
                         fontWeight: 600,
                     },
                     "& .MuiDataGrid-cell.gl-neg": {
-                        color: (theme) => theme.palette.error.main,
+                        color: theme.palette.error.main,
                         fontWeight: 600,
                     },
                     "& .MuiDataGrid-cell.gl-flat": {
-                        color: (theme) => (theme.palette.mode === "dark" ? theme.palette.common.white : theme.palette.text.primary),
+                        color: theme.palette.mode === "dark" ? theme.palette.common.white : theme.palette.text.primary,
                         fontWeight: 600,
                     },
                 }}
