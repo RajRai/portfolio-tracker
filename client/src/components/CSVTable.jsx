@@ -114,15 +114,24 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                     const sample = clean[0][h];
                     const numeric = isNumericLike(sample);
                     const glColumn = h.includes("G/L");
+                    const actionColumn = h === "Action";
+                    const dateColumn = h === "Date";
+                    const tickerColumn = h === "Ticker";
                     const compactMinWidth = numeric ? 86 : 80;
+                    const columnMinWidth = dateColumn
+                        ? isMobile ? 90 : 132
+                        : tickerColumn && isMobile
+                            ? 72
+                        : isMobile ? compactMinWidth : 120;
                     return {
                         field: h,
                         headerName: h.replace(/_/g, " "),
-                        flex: 1,
-                        minWidth: isMobile ? compactMinWidth : 120,
+                        ...(isMobile && actionColumn
+                            ? { width: 64, minWidth: 64, maxWidth: 64 }
+                            : { flex: 1, minWidth: columnMinWidth }),
                         sortable: true,
-                        align: numeric ? "right" : "left",
-                        headerAlign: numeric ? "right" : "left",
+                        align: actionColumn ? "center" : numeric ? "right" : "left",
+                        headerAlign: actionColumn ? "center" : numeric ? "right" : "left",
                         sortComparator,
                         cellClassName: glColumn
                             ? (params) => {
@@ -245,6 +254,7 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
             sx={{
                 width: { xs: "100%", sm: "92%" },
                 maxWidth: "100%",
+                boxSizing: "border-box",
                 mx: "auto",
                 mt: { xs: 1, sm: 2 },
                 borderRadius: { xs: "12px", sm: "10px" },
@@ -270,6 +280,7 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
                     pagination: { paginationModel: { pageSize: 25, page: 0 } },
                 }}
                 sx={{
+                    minWidth: 0,
                     border: 0,
                     borderRadius: 0,
                     backgroundColor: "transparent",

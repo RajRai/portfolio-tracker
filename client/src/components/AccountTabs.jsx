@@ -51,7 +51,7 @@ function AccountTabs({ account, liveStore }) {
                 : "";
 
     return (
-        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
             {/* ===== Inner Tabs Header ===== */}
             <Box
                 sx={{
@@ -59,6 +59,7 @@ function AccountTabs({ account, liveStore }) {
                     top: 0,
                     zIndex: 1000,
                     backgroundColor: "background.paper",
+                    minWidth: 0,
                 }}
             >
                 <Tabs
@@ -82,7 +83,7 @@ function AccountTabs({ account, liveStore }) {
             </Box>
 
             {/* ===== Scrollable Content Area ===== */}
-            <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+            <Box sx={{ flex: 1, overflow: "auto", minHeight: 0, minWidth: 0 }}>
                 <PortfolioAbout
                     about={account.about}
                     leftSlot={
