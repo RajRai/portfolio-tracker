@@ -1,7 +1,7 @@
-import pytest
 import pandas as pd
+import pytest
 
-from src.reports.analyze_fidelity import build_remaining_lot_book
+from src.reports.analyze_fidelity import _is_invalid_sell_post_quantity, build_remaining_lot_book
 
 
 def test_build_remaining_lot_book_prefers_long_term_lots_before_short_term():
@@ -110,3 +110,8 @@ def test_build_remaining_lot_book_uses_wash_sale_holding_period_for_later_classi
     assert len(lot_book["ABC"]) == 1
     assert lot_book["ABC"][0]["qty"] == 1.0
     assert lot_book["ABC"][0]["price"] == 85.0
+
+
+def test_is_invalid_sell_post_quantity_ignores_floating_point_dust():
+    assert not _is_invalid_sell_post_quantity(-2.7755575615628914e-16)
+    assert _is_invalid_sell_post_quantity(-0.001)

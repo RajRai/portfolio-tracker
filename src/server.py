@@ -4,6 +4,7 @@ import json
 import math
 import os
 import queue
+import re
 import threading
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
@@ -392,6 +393,152 @@ def _write_json(path: Path, payload: dict):
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     os.replace(tmp_path, path)
+
+
+_CSS_VALUE_RE = re.compile(r"^[#(),.%\sA-Za-z0-9-]+$")
+
+
+def _safe_css_value(value: str | None, fallback: str) -> str:
+    if not value or len(value) > 80 or not _CSS_VALUE_RE.fullmatch(value):
+        return fallback
+    return value
+
+
+def _quantstats_embed_css(
+    theme_mode: str,
+    background_default: str,
+    background_paper: str,
+    text_primary: str,
+    divider: str,
+    action_hover: str,
+) -> str:
+    return f"""
+:root {{ color-scheme: {theme_mode}; }}
+
+html, body {{
+  margin: 0;
+  padding: 0;
+  background: {background_default} !important;
+  color: {text_primary} !important;
+}}
+
+body {{ padding: 16px; }}
+
+.container {{
+  max-width: 1200px;
+  margin: 0 auto;
+}}
+
+.container::after {{
+  content: "";
+  display: table;
+  clear: both;
+}}
+
+#left {{
+  float: left !important;
+  width: calc(100% - 400px) !important;
+  box-sizing: border-box !important;
+}}
+
+#right {{
+  float: right !important;
+  width: 380px !important;
+  box-sizing: border-box !important;
+}}
+
+svg[viewBox] {{
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 12px 0 !important;
+}}
+
+@media (max-width: 1050px) {{
+  #left, #right {{
+    float: none !important;
+    width: 100% !important;
+    clear: both !important;
+    display: flow-root !important;
+    position: static !important;
+    box-sizing: border-box !important;
+  }}
+
+  #left {{ margin-bottom: 16px !important; }}
+  #right {{ margin-top: 0 !important; }}
+  svg {{ position: static !important; }}
+  svg[viewBox] {{ clear: both !important; }}
+}}
+
+table {{
+  color: {text_primary} !important;
+  background: {background_paper} !important;
+  border-color: {divider} !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  border: 1px solid {divider} !important;
+}}
+
+table th, table td {{
+  color: {text_primary} !important;
+  border: 1px solid {divider} !important;
+}}
+
+table thead th {{
+  background: {action_hover} !important;
+  font-weight: 600 !important;
+}}
+"""
+
+
+def _build_embedded_report_html(raw_html: str) -> str:
+    theme_mode = "dark" if request.args.get("mode") == "dark" else "light"
+    background_default = _safe_css_value(
+        request.args.get("bg"),
+        "#121212" if theme_mode == "dark" else "#ffffff",
+    )
+    background_paper = _safe_css_value(
+        request.args.get("paper"),
+        "#1e1e1e" if theme_mode == "dark" else "#ffffff",
+    )
+    text_primary = _safe_css_value(
+        request.args.get("text"),
+        "#ffffff" if theme_mode == "dark" else "#111111",
+    )
+    divider = _safe_css_value(
+        request.args.get("divider"),
+        "rgba(255,255,255,0.12)" if theme_mode == "dark" else "rgba(0,0,0,0.12)",
+    )
+    action_hover = _safe_css_value(
+        request.args.get("hover"),
+        "rgba(255,255,255,0.08)" if theme_mode == "dark" else "rgba(0,0,0,0.04)",
+    )
+    injected_css = _quantstats_embed_css(
+        theme_mode,
+        background_default,
+        background_paper,
+        text_primary,
+        divider,
+        action_hover,
+    )
+
+    html = re.sub(
+        r"<body([^>]*)\sonload=[\"'][^\"']*[\"']([^>]*)>",
+        r"<body\1\2>",
+        raw_html,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    if re.search(r"<head[^>]*>", html, flags=re.IGNORECASE) and not re.search(r"<base\b", html, flags=re.IGNORECASE):
+        html = re.sub(r"<head[^>]*>", lambda match: f"{match.group(0)}\n<base target=\"_blank\" />", html, count=1, flags=re.IGNORECASE)
+
+    if re.search(r"</head>", html, flags=re.IGNORECASE):
+        html = re.sub(r"</head>", f"<style>{injected_css}</style></head>", html, count=1, flags=re.IGNORECASE)
+    else:
+        html = f"<style>{injected_css}</style>\n{html}"
+
+    return html
 
 
 def _extract_holdings(rows: list[dict]) -> list[dict]:
@@ -1047,6 +1194,10 @@ def serve_report(filename):
     report_path = OUT_DIR / filename
     if not report_path.exists():
         return jsonify({"error": f"Report {filename} not found"}), 404
+    if request.args.get("embed") == "1":
+        with open(report_path, "r", encoding="utf-8") as f:
+            html = _build_embedded_report_html(f.read())
+        return Response(html, mimetype="text/html")
     return send_from_directory(OUT_DIR, filename, mimetype="text/html")
 
 # ============================================================

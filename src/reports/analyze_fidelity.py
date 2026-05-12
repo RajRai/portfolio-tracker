@@ -19,6 +19,7 @@ from src.util import BASE_DIR
 qs.extend_pandas()
 
 ny_tz = pytz.timezone("America/New_York")
+SHARE_EPSILON = 1e-6
 
 def add_missing_zeros(returns: pd.Series) -> pd.Series:
     """
@@ -66,6 +67,10 @@ def _regression_beta(portfolio_returns: pd.Series, benchmark_returns: pd.Series)
 
     covariance = ((benchmark - benchmark_mean) * (portfolio - portfolio.mean())).sum()
     return float(covariance / variance)
+
+
+def _is_invalid_sell_post_quantity(post_trade_qty: float, eps: float = SHARE_EPSILON) -> bool:
+    return float(post_trade_qty) < -eps
 
 
 def _lot_holding_start(lot: dict) -> pd.Timestamp:
@@ -134,7 +139,7 @@ def _apply_wash_adjustment_to_existing_lots(
 def build_remaining_lot_book(trades: pd.DataFrame, symbols: list[str]) -> dict[str, list[dict]]:
     lot_book = {sym: [] for sym in symbols}
     pending_washes = {sym: [] for sym in symbols}
-    eps = sys.float_info.epsilon
+    eps = SHARE_EPSILON
     ordered_trades = (
         trades.reset_index()
         .rename(columns={"index": "_trade_order"})
@@ -300,7 +305,7 @@ def main():
         trades = df[mask].copy()
         reinvest_mask = (
             df["Action"].str.contains(r"REINVEST", flags=re.I, na=False)
-            & pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).abs().gt(sys.float_info.epsilon)
+            & pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).abs().gt(SHARE_EPSILON)
             & pd.to_numeric(df["Price"], errors="coerce").notna()
         )
         reinvestments = df[reinvest_mask].copy()
@@ -394,8 +399,9 @@ def main():
                 else 0
             )
 
-            if current_qty + qty < -sys.float_info.epsilon:
-                print(f"⚠️ Ignoring invalid sell of {abs(qty)} {sym} on {row['Run Date'].date()} ({current_qty + qty} after transaction)")
+            post_trade_qty = current_qty + qty
+            if _is_invalid_sell_post_quantity(post_trade_qty):
+                print(f"⚠️ Ignoring invalid sell of {abs(qty)} {sym} on {row['Run Date'].date()} ({post_trade_qty} after transaction)")
                 continue
 
             position_df.loc[trade_date:, sym] = (position_df.loc[trade_date:, sym] + qty).clip(lower=0)
@@ -405,7 +411,7 @@ def main():
         lot_book = build_remaining_lot_book(trades, symbols)
 
         position_df = position_df.ffill().fillna(0)
-        position_df[(position_df.abs() < 1e-6)] = 0.0
+        position_df[(position_df.abs() < SHARE_EPSILON)] = 0.0
         value_df = position_df * prices
         weights = value_df.div(value_df.sum(axis=1), axis=0).fillna(0)
         asset_returns = prices.pct_change().fillna(0)
@@ -468,7 +474,7 @@ def main():
             for col in df.columns:
                 s = df[col].dropna().copy()
                 # Keep alignment but replace zero weights with None
-                s[s.abs() < 1e-6] = None
+                s[s.abs() < SHARE_EPSILON] = None
                 if s.isna().all():
                     continue
                 pts = [{"t": d.strftime("%Y-%m-%d"), "v": (None if pd.isna(v) else float(v))} for d, v in s.items()]
@@ -503,11 +509,11 @@ def main():
 
         latest_date = weights.index[-1]
         current_weights = weights.loc[latest_date]
-        current_weights = current_weights[current_weights.abs() > sys.float_info.epsilon]
+        current_weights = current_weights[current_weights.abs() > SHARE_EPSILON]
         current_weights = current_weights.sort_values(ascending=False)
         current_lot_qty_df = pd.DataFrame(0.0, index=prices.index, columns=symbols)
         current_lot_basis = pd.Series(0.0, index=symbols, dtype=float)
-        eps = sys.float_info.epsilon
+        eps = SHARE_EPSILON
 
         for sym in symbols:
             sym_prices = prices[sym].dropna()
