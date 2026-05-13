@@ -26,6 +26,7 @@ load_dotenv()
 # ============================================================
 OUT_DIR = BASE_DIR / "out"
 CLIENT_DIR = BASE_DIR / "client" / "dist"
+DATA_ACCOUNTS_FILE = BASE_DIR / "data" / "accounts.json"
 POLYGON_REALTIME_STOCKS_WS_URL = os.environ.get(
     "POLYGON_REALTIME_STOCKS_WS_URL",
     "wss://socket.polygon.io/stocks",
@@ -60,7 +61,43 @@ def _load_accounts():
         return []
 
     with open(index_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        accounts = json.load(f)
+
+    if not DATA_ACCOUNTS_FILE.exists():
+        return accounts
+
+    try:
+        with open(DATA_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            canonical_accounts = json.load(f)
+    except Exception:
+        return accounts
+
+    canonical_order = {
+        account["id"]: idx
+        for idx, account in enumerate(canonical_accounts)
+    }
+    canonical_name_order = {
+        account["name"]: idx
+        for idx, account in enumerate(canonical_accounts)
+    }
+    fallback_order = {
+        account["id"]: idx
+        for idx, account in enumerate(accounts)
+    }
+
+    return sorted(
+        accounts,
+        key=lambda account: (
+            0 if (
+                account["id"] in canonical_order
+                or account.get("name") in canonical_name_order
+            ) else 1,
+            canonical_order.get(
+                account["id"],
+                canonical_name_order.get(account.get("name"), fallback_order[account["id"]]),
+            ),
+        ),
+    )
 
 
 def _parse_tickers_param(raw: str) -> list[str]:

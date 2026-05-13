@@ -254,6 +254,31 @@ def load_accounts():
         print(f"❌ Error reading {ACCOUNTS_FILE}: {e}")
         return []
 
+def _upsert_accounts_index_entry(
+    accounts_list: list[dict],
+    accounts_entry: dict,
+    canonical_accounts: list[dict],
+) -> list[dict]:
+    canonical_order = {
+        account["id"]: idx
+        for idx, account in enumerate(canonical_accounts)
+    }
+    merged_accounts = [account for account in accounts_list if account["id"] != accounts_entry["id"]]
+    merged_accounts.append(accounts_entry)
+    fallback_order = {
+        account["id"]: idx
+        for idx, account in enumerate(merged_accounts)
+    }
+
+    return sorted(
+        merged_accounts,
+        key=lambda account: (
+            0 if account["id"] in canonical_order else 1,
+            canonical_order.get(account["id"], fallback_order[account["id"]]),
+        ),
+    )
+
+
 def main():
     # ============================================================
     #  1. Configuration
@@ -268,7 +293,8 @@ def main():
 
     # --- Use merged CSVs instead of raw Fidelity exports ---
     BASE = BASE_DIR / "data"
-    accounts = load_accounts()
+    all_accounts = load_accounts()
+    accounts = all_accounts
 
     # You can override with command-line arguments like:
     # python analyze_portfolio.py REDACTED REDACTED
@@ -597,8 +623,7 @@ def main():
                 accounts_list = json.load(f)
         else:
             accounts_list = []
-        accounts_list = [a for a in accounts_list if a["id"] != account_id]
-        accounts_list.append(accounts_entry)
+        accounts_list = _upsert_accounts_index_entry(accounts_list, accounts_entry, all_accounts)
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(accounts_list, f, indent=2)
 

@@ -1,3 +1,5 @@
+import json
+
 from src import server
 
 
@@ -48,3 +50,37 @@ def test_embedded_report_rewrite_serves_same_origin_html(monkeypatch, tmp_path):
     assert "<base target=\"_blank\" />" in html
     assert ":root { color-scheme: dark; }" in html
     assert "background: #0f0f0f !important;" in html
+
+
+def test_load_accounts_sorts_using_canonical_account_order(monkeypatch, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "accounts.json").write_text(
+        json.dumps(
+            [
+                {"id": "legacy-retirement", "name": "Retirement"},
+                {"id": "legacy-optical", "name": "Optical"},
+                {"id": "legacy-cloud", "name": "Cloud"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    data_accounts = tmp_path / "accounts.json"
+    data_accounts.write_text(
+        json.dumps(
+            [
+                {"id": "OPTICAL", "name": "Optical"},
+                {"id": "CLOUD", "name": "Cloud"},
+                {"id": "RETIREMENT", "name": "Retirement"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(server, "OUT_DIR", out_dir)
+    monkeypatch.setattr(server, "DATA_ACCOUNTS_FILE", data_accounts)
+
+    accounts = server._load_accounts()
+
+    assert [account["name"] for account in accounts] == ["Optical", "Cloud", "Retirement"]

@@ -1,7 +1,11 @@
 import pandas as pd
 import pytest
 
-from src.reports.analyze_fidelity import _is_invalid_sell_post_quantity, build_remaining_lot_book
+from src.reports.analyze_fidelity import (
+    _is_invalid_sell_post_quantity,
+    _upsert_accounts_index_entry,
+    build_remaining_lot_book,
+)
 
 
 def test_build_remaining_lot_book_prefers_long_term_lots_before_short_term():
@@ -115,3 +119,22 @@ def test_build_remaining_lot_book_uses_wash_sale_holding_period_for_later_classi
 def test_is_invalid_sell_post_quantity_ignores_floating_point_dust():
     assert not _is_invalid_sell_post_quantity(-2.7755575615628914e-16)
     assert _is_invalid_sell_post_quantity(-0.001)
+
+
+def test_upsert_accounts_index_entry_restores_canonical_account_order():
+    canonical_accounts = [
+        {"id": "OPTICAL", "name": "Optical Computing"},
+        {"id": "CLOUD", "name": "Cloud"},
+        {"id": "RETIREMENT", "name": "Retirement"},
+    ]
+    accounts_list = [
+        {"id": "RETIREMENT", "name": "Retirement", "report": "/reports/report_2.html"},
+        {"id": "OPTICAL", "name": "Optical Computing", "report": "/reports/report_0.html"},
+        {"id": "CLOUD", "name": "Cloud", "report": "/reports/report_1.html"},
+    ]
+    updated_entry = {"id": "RETIREMENT", "name": "Retirement", "report": "/reports/report_9.html"}
+
+    ordered_accounts = _upsert_accounts_index_entry(accounts_list, updated_entry, canonical_accounts)
+
+    assert [account["id"] for account in ordered_accounts] == ["OPTICAL", "CLOUD", "RETIREMENT"]
+    assert ordered_accounts[-1]["report"] == "/reports/report_9.html"
