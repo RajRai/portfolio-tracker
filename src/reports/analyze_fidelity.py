@@ -286,7 +286,7 @@ def main():
 
     load_dotenv()
     POLYGON_KEY = os.getenv("POLYGON_API_KEY")
-    BENCHMARK = "SPY"
+    BENCHMARK = "VT"
 
     if not POLYGON_KEY:
         raise RuntimeError("Missing POLYGON_API_KEY in .env")
