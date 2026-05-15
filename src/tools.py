@@ -76,7 +76,10 @@ def _polygon_get(path_or_url: str, params: dict | None = None, api_key: str | No
     url = path_or_url if path_or_url.startswith("http") else f"{POLYGON_BASE_URL}{path_or_url}"
     request_params = dict(params or {})
     request_params["apiKey"] = key
-    response = requests.get(url, params=request_params, timeout=20)
+    try:
+        response = requests.get(url, params=request_params, timeout=20)
+    except requests.RequestException as exc:
+        raise ToolDataError(f"Polygon request failed: {exc.__class__.__name__}", 502) from exc
     if response.status_code >= 400:
         raise ToolDataError(_polygon_error(response), 502)
     return response.json()
@@ -152,7 +155,11 @@ def stock_source(body: dict, accounts: list[dict], out_dir: Path, api_key: str |
 def _fetch_ticker_overviews(tickers: list[str], api_key: str | None = None) -> dict[str, dict]:
     details = {}
     for ticker in tickers:
-        payload = _polygon_get(f"/v3/reference/tickers/{quote(ticker, safe='')}", {}, api_key)
+        try:
+            payload = _polygon_get(f"/v3/reference/tickers/{quote(ticker, safe='')}", {}, api_key)
+        except ToolDataError as exc:
+            details[ticker] = {"_polygon_error": str(exc)}
+            continue
         details[ticker] = payload.get("results") or {}
     return details
 
@@ -163,20 +170,79 @@ def _is_etf_overview(item: dict) -> bool:
     return ticker_type == "ETF" or "ETF" in ticker_type or "EXCHANGE TRADED FUND" in name
 
 
+def _dict_get(value, *keys):
+    for key in keys:
+        try:
+            item = value.get(key)
+        except AttributeError:
+            try:
+                item = value[key]
+            except (KeyError, TypeError):
+                item = None
+        if item not in (None, ""):
+            return item
+    return None
+
+
+def _fetch_yfinance_market_caps(tickers: list[str]) -> dict[str, dict]:
+    if yf is None or not tickers:
+        return {}
+
+    details = {}
+    for ticker in tickers:
+        try:
+            yf_ticker = yf.Ticker(ticker)
+            fast_info = getattr(yf_ticker, "fast_info", {}) or {}
+            info = getattr(yf_ticker, "info", {}) or {}
+        except Exception as exc:
+            details[ticker] = {"_yfinance_error": str(exc)}
+            continue
+
+        market_cap = _to_float(_dict_get(fast_info, "marketCap", "market_cap"))
+        if market_cap is None:
+            market_cap = _to_float(_dict_get(info, "marketCap", "market_cap"))
+
+        details[ticker] = {
+            "market_cap": market_cap,
+            "name": _dict_get(info, "longName", "shortName", "displayName"),
+            "currency": _dict_get(fast_info, "currency") or _dict_get(info, "currency", "financialCurrency"),
+            "exchange": _dict_get(fast_info, "exchange") or _dict_get(info, "exchange", "fullExchangeName"),
+            "type": _dict_get(info, "quoteType"),
+        }
+    return details
+
+
 def market_cap_weights(tickers, api_key: str | None = None) -> dict:
     normalized = normalize_tickers(tickers)
     if not normalized:
         raise ToolDataError("Add at least one stock ticker", 400)
 
     details = _fetch_ticker_overviews(normalized, api_key)
+    yfinance_candidates = [
+        ticker
+        for ticker in normalized
+        if not _is_etf_overview(details.get(ticker) or {})
+        and not (_to_float((details.get(ticker) or {}).get("market_cap")) or 0) > 0
+    ]
+    yfinance_details = _fetch_yfinance_market_caps(yfinance_candidates)
     rows = []
     total = 0.0
 
     for ticker in normalized:
         item = details.get(ticker) or {}
-        market_cap = _to_float(item.get("market_cap"))
-        method = "Polygon market cap" if market_cap is not None and market_cap > 0 else None
+        fallback_item = yfinance_details.get(ticker) or {}
+        polygon_market_cap = _to_float(item.get("market_cap"))
+        yfinance_market_cap = _to_float(fallback_item.get("market_cap"))
+        market_cap = None
+        method = None
         note = None
+
+        if polygon_market_cap is not None and polygon_market_cap > 0:
+            market_cap = polygon_market_cap
+            method = "Polygon market cap"
+        elif yfinance_market_cap is not None and yfinance_market_cap > 0:
+            market_cap = yfinance_market_cap
+            method = "Yahoo Finance market cap"
 
         if market_cap is not None and market_cap > 0:
             total += market_cap
@@ -185,13 +251,13 @@ def market_cap_weights(tickers, api_key: str | None = None) -> dict:
 
         rows.append({
             "ticker": ticker,
-            "name": item.get("name") or ticker,
+            "name": item.get("name") or fallback_item.get("name") or ticker,
             "market_cap": market_cap,
             "market_value": market_cap,
             "valuation_method": method,
-            "exchange": item.get("primary_exchange"),
-            "type": item.get("type"),
-            "currency": item.get("currency_name"),
+            "exchange": item.get("primary_exchange") or fallback_item.get("exchange"),
+            "type": item.get("type") or fallback_item.get("type"),
+            "currency": item.get("currency_name") or fallback_item.get("currency"),
             "weight": None,
             "note": note,
         })

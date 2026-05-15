@@ -55,6 +55,34 @@ const formatNumber = (value) => {
     return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(Number(value));
 };
 
+const marketCapMultipliers = {
+    K: 1_000,
+    M: 1_000_000,
+    MM: 1_000_000,
+    MILLION: 1_000_000,
+    B: 1_000_000_000,
+    BN: 1_000_000_000,
+    BILLION: 1_000_000_000,
+    T: 1_000_000_000_000,
+    TN: 1_000_000_000_000,
+    TRILLION: 1_000_000_000_000,
+};
+
+const parseMarketCapValue = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+
+    const compact = raw.toUpperCase().replace(/[$,\s]/g, "");
+    const match = compact.match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([A-Z]+)?$/);
+    if (!match) return null;
+
+    const amount = Number(match[1]);
+    const suffix = match[2] || "";
+    const multiplier = suffix ? marketCapMultipliers[suffix] : 1;
+    const marketCap = amount * (multiplier || 0);
+    return Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null;
+};
+
 async function postJson(url, body) {
     const response = await fetch(url, {
         method: "POST",
@@ -176,6 +204,7 @@ function SourcePicker({
 
 function MarketCapResults({ data, sourceHoldings }) {
     const [included, setIncluded] = useState({});
+    const [manualCapInputs, setManualCapInputs] = useState({});
     const sourceWeightByTicker = useMemo(
         () => Object.fromEntries((sourceHoldings || []).map((holding) => [holding.ticker, holding.source_weight])),
         [sourceHoldings]
@@ -195,29 +224,63 @@ function MarketCapResults({ data, sourceHoldings }) {
             }
             return next;
         });
+
+        setManualCapInputs((prev) => {
+            const next = {};
+            const rowTickers = new Set(rows.map((row) => row.ticker));
+            for (const [ticker, value] of Object.entries(prev)) {
+                if (rowTickers.has(ticker)) {
+                    next[ticker] = value;
+                }
+            }
+            return next;
+        });
     }, [rows]);
 
-    const displayRows = useMemo(() => {
-        const includedTotal = rows.reduce(
-            (sum, row) => sum + (included[row.ticker] && row.market_cap ? Number(row.market_cap) : 0),
+    const { displayRows, includedTotal } = useMemo(() => {
+        const rowsWithManualCaps = rows.map((row) => {
+            const manualInput = manualCapInputs[row.ticker] || "";
+            const manualMarketCap = parseMarketCapValue(manualInput);
+            const hasManualInput = Boolean(manualInput.trim());
+            const providerMarketCap = row.market_cap ? Number(row.market_cap) : null;
+            const effectiveMarketCap = manualMarketCap || providerMarketCap;
+
+            return {
+                ...row,
+                effective_market_cap: effectiveMarketCap,
+                has_manual_input: hasManualInput,
+                manual_market_cap: manualMarketCap,
+                manual_market_cap_invalid: hasManualInput && manualMarketCap == null,
+            };
+        });
+
+        const nextIncludedTotal = rowsWithManualCaps.reduce(
+            (sum, row) => (
+                sum + ((included[row.ticker] ?? true) && row.effective_market_cap ? row.effective_market_cap : 0)
+            ),
             0
         );
 
-        return rows.map((row) => ({
+        const nextDisplayRows = rowsWithManualCaps.map((row) => ({
             ...row,
             adjusted_weight:
-                included[row.ticker] && row.market_cap && includedTotal > 0
-                    ? Number(row.market_cap) / includedTotal
+                (included[row.ticker] ?? true) && row.effective_market_cap && nextIncludedTotal > 0
+                    ? row.effective_market_cap / nextIncludedTotal
                     : 0,
         }));
-    }, [rows, included]);
+
+        return {
+            displayRows: nextDisplayRows,
+            includedTotal: nextIncludedTotal,
+        };
+    }, [rows, included, manualCapInputs]);
 
     if (!data) return null;
 
     return (
         <Box>
             <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                Total market cap: {formatCurrency(data.total_market_cap)}
+                Included market cap: {formatCurrency(includedTotal)}
             </Typography>
             <Table size="small">
                 <TableHead>
@@ -225,7 +288,7 @@ function MarketCapResults({ data, sourceHoldings }) {
                     <TableCell padding="checkbox">Use</TableCell>
                     <TableCell>Ticker</TableCell>
                     <TableCell>Name</TableCell>
-                    <TableCell align="right">Market Cap</TableCell>
+                    <TableCell align="right">Market Cap / Override</TableCell>
                     <TableCell align="right">Market Weight</TableCell>
                     <TableCell align="right">Source Weight</TableCell>
                     <TableCell>Method</TableCell>
@@ -238,23 +301,55 @@ function MarketCapResults({ data, sourceHoldings }) {
                         <TableCell padding="checkbox">
                             <Checkbox
                                 size="small"
-                                checked={included[row.ticker] ?? true}
+                                checked={row.effective_market_cap ? included[row.ticker] ?? true : false}
                                 onChange={(event) => {
                                     setIncluded((prev) => ({
                                         ...prev,
                                         [row.ticker]: event.target.checked,
                                     }));
                                 }}
-                                disabled={!row.market_cap}
+                                disabled={!row.effective_market_cap}
                             />
                         </TableCell>
                         <TableCell>{row.ticker}</TableCell>
                         <TableCell>{row.name}</TableCell>
-                        <TableCell align="right">{formatCurrency(row.market_cap)}</TableCell>
+                        <TableCell align="right">
+                            <TextField
+                                size="small"
+                                value={manualCapInputs[row.ticker] || ""}
+                                onChange={(event) => {
+                                    const value = event.target.value;
+                                    setManualCapInputs((prev) => ({
+                                        ...prev,
+                                        [row.ticker]: value,
+                                    }));
+                                }}
+                                placeholder={row.market_cap ? formatCurrency(row.market_cap) : "Enter cap"}
+                                error={row.manual_market_cap_invalid}
+                                helperText={
+                                    row.manual_market_cap_invalid
+                                        ? "Use a positive number, e.g. 48B"
+                                        : row.has_manual_input
+                                            ? `Manual: ${formatCurrency(row.manual_market_cap)}`
+                                            : row.market_cap
+                                                ? `Provider: ${formatCurrency(row.market_cap)}`
+                                                : "No provider cap"
+                                }
+                                sx={{ minWidth: 170 }}
+                            />
+                        </TableCell>
                         <TableCell align="right">{formatPercent(row.adjusted_weight)}</TableCell>
                         <TableCell align="right">{formatPercent(sourceWeightByTicker[row.ticker])}</TableCell>
-                        <TableCell>{row.valuation_method || ""}</TableCell>
-                        <TableCell>{row.note || ""}</TableCell>
+                        <TableCell>
+                            {row.has_manual_input && row.manual_market_cap ? "Manual market cap" : row.valuation_method || ""}
+                        </TableCell>
+                        <TableCell>
+                            {row.manual_market_cap_invalid
+                                ? "Manual value ignored"
+                                : row.has_manual_input && row.manual_market_cap
+                                    ? "Manual override"
+                                    : row.note || ""}
+                        </TableCell>
                     </TableRow>
                 ))}
                 </TableBody>
@@ -373,7 +468,7 @@ export default function StockToolsPage({ tool, accounts }) {
             } else {
                 const payload = await postJson("/api/tools/market-cap-weights", { tickers });
                 setMarketCapData(payload);
-                setWarnings(payload.missing?.length ? [`Missing market caps: ${payload.missing.join(", ")}`] : []);
+                setWarnings(payload.warnings || []);
             }
         } catch (err) {
             setError(err.message);

@@ -56,6 +56,7 @@ def test_market_cap_weights_calculates_percentages(monkeypatch):
             "MISSING": {"name": "Missing Co"},
         },
     )
+    monkeypatch.setattr(tools, "_fetch_yfinance_market_caps", lambda tickers: {})
 
     payload = tools.market_cap_weights(["aapl", "msft", "aapl", "missing"], api_key="key")
 
@@ -76,6 +77,7 @@ def test_market_cap_weights_flags_etfs_without_market_caps(monkeypatch):
             "AAPL": {"name": "Apple Inc", "market_cap": 300},
         },
     )
+    monkeypatch.setattr(tools, "_fetch_yfinance_market_caps", lambda tickers: {})
 
     payload = tools.market_cap_weights(["spy", "aapl"], api_key="key")
 
@@ -86,6 +88,44 @@ def test_market_cap_weights_flags_etfs_without_market_caps(monkeypatch):
     assert rows_by_ticker["SPY"]["note"] == "Market cap unavailable - ETF"
     assert rows_by_ticker["SPY"]["valuation_method"] is None
     assert payload["missing"] == ["SPY"]
+
+
+def test_market_cap_weights_uses_yfinance_fallback(monkeypatch):
+    yfinance_calls = []
+
+    monkeypatch.setattr(
+        tools,
+        "_fetch_ticker_overviews",
+        lambda tickers, api_key=None: {
+            "AAPL": {"name": "Apple Inc", "market_cap": 300, "currency_name": "usd"},
+            "FANUY": {"name": "Fanuc ADR"},
+        },
+    )
+
+    def fake_yfinance_market_caps(tickers):
+        yfinance_calls.append(tickers)
+        return {
+            "FANUY": {
+                "name": "Fanuc Corp ADR",
+                "market_cap": 100,
+                "currency": "USD",
+                "exchange": "PNK",
+                "type": "EQUITY",
+            }
+        }
+
+    monkeypatch.setattr(tools, "_fetch_yfinance_market_caps", fake_yfinance_market_caps)
+
+    payload = tools.market_cap_weights(["aapl", "fanuy"], api_key="key")
+
+    rows_by_ticker = {row["ticker"]: row for row in payload["rows"]}
+    assert yfinance_calls == [["FANUY"]]
+    assert payload["total_market_cap"] == pytest.approx(400)
+    assert rows_by_ticker["AAPL"]["weight"] == pytest.approx(0.75)
+    assert rows_by_ticker["FANUY"]["weight"] == pytest.approx(0.25)
+    assert rows_by_ticker["FANUY"]["valuation_method"] == "Yahoo Finance market cap"
+    assert rows_by_ticker["FANUY"]["exchange"] == "PNK"
+    assert payload["missing"] == []
 
 
 def test_earnings_calendar_uses_yfinance(monkeypatch):
