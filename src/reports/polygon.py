@@ -13,8 +13,10 @@ from src.yfinance_cache import YFINANCE_CACHE_DIR, YFINANCE_HISTORY_CACHE_DIR, y
 ET = pytz.timezone("America/New_York")
 BASE_CACHE_DIR = BASE_DIR / "data" / ".cache"
 CACHE_DIR = BASE_CACHE_DIR / "polygon"
+REFERENCE_CACHE_DIR = BASE_CACHE_DIR / "polygon-reference"
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+REFERENCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _now_et():
@@ -63,6 +65,10 @@ def _save_cache(symbol, start, end, data):
 
 def _save_yfinance_cache(symbol, start, end, data):
     _save_json_cache(_yfinance_cache_path(symbol, start, end), data)
+
+
+def _reference_cache_path(kind, symbol, start, end):
+    return REFERENCE_CACHE_DIR / f"{kind}_{symbol}_{start}_{end}.json"
 
 
 def _daily_series_from_results(results, today_date):
@@ -175,6 +181,129 @@ def _fetch_intraday_price(symbol, today_str, api_key):
         return None
 
     return float(results[0]["c"])
+
+
+def _fetch_polygon_reference_results(symbol, kind, date_field, start, end, api_key):
+    cache_path = _reference_cache_path(kind, symbol, start, end)
+    cache_data, hit = _load_json_cache(cache_path)
+    if hit:
+        return cache_data.get("results", [])
+
+    print(f"Fetching Polygon {kind} {symbol} -> {start} {end}")
+    base_url = f"https://api.polygon.io/v3/reference/{kind}"
+    next_url = base_url
+    params = {
+        "ticker": symbol,
+        f"{date_field}.gte": start,
+        f"{date_field}.lte": end,
+        "order": "asc",
+        "limit": 1000,
+        "sort": date_field,
+        "apiKey": api_key,
+    }
+    results = []
+
+    while next_url:
+        response = requests.get(next_url, params=params if next_url == base_url else None)
+        if response.status_code != 200:
+            raise RuntimeError(f"Polygon {kind} fetch failed for {symbol}: {response.status_code}")
+
+        payload = response.json()
+        results.extend(payload.get("results", []))
+
+        next_url = payload.get("next_url")
+        if next_url and "apiKey=" not in next_url:
+            next_url = f"{next_url}{'&' if '?' in next_url else '?'}apiKey={api_key}"
+        params = None
+
+    cache_data = {"results": results}
+    _save_json_cache(cache_path, cache_data)
+    return results
+
+
+def get_polygon_splits(symbols, start, end):
+    api_key = os.getenv("POLYGON_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing POLYGON_API_KEY")
+
+    out = {}
+    for sym in symbols:
+        out[sym] = _fetch_polygon_reference_results(sym, "splits", "execution_date", start, end, api_key)
+    return out
+
+
+def future_split_factor_for_date(split_events, date_like) -> float:
+    trade_date = pd.Timestamp(date_like).normalize()
+    factor = 1.0
+    for event in split_events or []:
+        split_date = pd.Timestamp(event.get("execution_date")).normalize()
+        split_from = float(event.get("split_from") or 0)
+        split_to = float(event.get("split_to") or 0)
+        if split_date > trade_date and split_from > 0 and split_to > 0:
+            factor *= split_to / split_from
+    return factor
+
+
+def get_polygon_dividends(symbols, start, end):
+    api_key = os.getenv("POLYGON_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing POLYGON_API_KEY")
+
+    splits_by_symbol = get_polygon_splits(symbols, start, end)
+    series_by_symbol = {}
+
+    for sym in symbols:
+        events = _fetch_polygon_reference_results(sym, "dividends", "ex_dividend_date", start, end, api_key)
+        amounts_by_date = {}
+        split_events = splits_by_symbol.get(sym, [])
+
+        for event in events:
+            ex_dividend_date = event.get("ex_dividend_date")
+            cash_amount = event.get("cash_amount")
+            if not ex_dividend_date:
+                continue
+
+            try:
+                amount = float(cash_amount)
+            except (TypeError, ValueError):
+                continue
+            if amount == 0:
+                continue
+
+            ex_date = pd.Timestamp(ex_dividend_date).normalize()
+            adjusted_amount = amount / future_split_factor_for_date(split_events, ex_date)
+            amounts_by_date[ex_date] = amounts_by_date.get(ex_date, 0.0) + adjusted_amount
+
+        series_by_symbol[sym] = pd.Series(amounts_by_date, dtype=float)
+
+    if not series_by_symbol:
+        return pd.DataFrame()
+
+    dividends = pd.DataFrame(series_by_symbol).sort_index()
+    for sym in symbols:
+        if sym not in dividends.columns:
+            dividends[sym] = pd.Series(dtype=float)
+    return dividends.reindex(columns=symbols)
+
+
+def compute_total_return_returns(prices: pd.DataFrame, dividends: pd.DataFrame | None = None) -> pd.DataFrame:
+    if prices.empty:
+        return prices.copy()
+
+    price_frame = prices.sort_index().astype(float)
+    dividend_frame = pd.DataFrame(0.0, index=price_frame.index, columns=price_frame.columns)
+    if dividends is not None and not dividends.empty:
+        dividend_frame = dividend_frame.add(
+            dividends.reindex(index=price_frame.index, columns=price_frame.columns).fillna(0.0).astype(float),
+            fill_value=0.0,
+        )
+    previous_close = price_frame.shift(1)
+    price_returns = price_frame.divide(previous_close).sub(1.0)
+    dividend_returns = dividend_frame.divide(previous_close)
+    total_returns = price_returns.fillna(0.0).add(dividend_returns.fillna(0.0), fill_value=0.0).fillna(0.0)
+    if len(total_returns.index):
+        total_returns.iloc[0] = 0.0
+    return total_returns
 
 
 def get_polygon_prices(symbols, start, end):

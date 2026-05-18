@@ -15,7 +15,7 @@ from src.reports.analyze_fidelity import (
     _regression_beta,
     add_missing_zeros,
 )
-from src.reports.polygon import get_polygon_prices
+from src.reports.polygon import compute_total_return_returns, get_polygon_dividends, get_polygon_prices
 from src.tools import ToolDataError, normalize_tickers
 from src.util import BASE_DIR
 
@@ -180,7 +180,12 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
     )
 
 
-def _build_buy_and_hold_basket(prices: pd.DataFrame, holdings: list[dict], start_date: pd.Timestamp) -> dict:
+def _build_buy_and_hold_basket(
+    prices: pd.DataFrame,
+    holdings: list[dict],
+    asset_total_returns: pd.DataFrame,
+    start_date: pd.Timestamp,
+) -> dict:
     symbols = [holding["ticker"] for holding in holdings]
     basket_prices = prices.reindex(columns=symbols)
     basket_prices = basket_prices[basket_prices.index >= start_date].copy()
@@ -189,28 +194,27 @@ def _build_buy_and_hold_basket(prices: pd.DataFrame, holdings: list[dict], start
         raise ToolDataError("No price history was found after the effective start date", 400)
 
     entry_prices = basket_prices.loc[start_date, symbols].astype(float)
-    quantities = pd.Series(
-        {
-            holding["ticker"]: float(holding["weight"]) / float(entry_prices[holding["ticker"]])
-            for holding in holdings
-        },
-        dtype=float,
+    basket_asset_returns = (
+        asset_total_returns
+        .reindex(index=basket_prices.index, columns=symbols)
+        .fillna(0.0)
+        .astype(float)
     )
-    position_df = pd.DataFrame(
-        {ticker: quantities[ticker] for ticker in symbols},
-        index=basket_prices.index,
-    )
-    value_df = position_df.mul(basket_prices, axis=1)
+    if len(basket_asset_returns.index):
+        basket_asset_returns.iloc[0] = 0.0
+
+    basis = pd.Series({holding["ticker"]: float(holding["weight"]) for holding in holdings}, dtype=float)
+    growth_df = (1.0 + basket_asset_returns).cumprod()
+    value_df = growth_df.mul(basis, axis=1)
     total_value = value_df.sum(axis=1)
     returns = total_value.pct_change().fillna(0.0)
     weights_df = value_df.div(total_value.replace(0, pd.NA), axis=0).fillna(0.0)
-    basis = quantities * entry_prices
 
     return {
         "symbols": symbols,
         "prices": basket_prices,
         "entry_prices": entry_prices,
-        "quantities": quantities,
+        "asset_returns": basket_asset_returns,
         "value_df": value_df,
         "weights_df": weights_df,
         "returns": returns,
@@ -319,7 +323,7 @@ def _current_weights_frame(basket: dict) -> pd.DataFrame:
     current_weights = weights_df.loc[latest_date]
     current_weights = current_weights[current_weights.abs() > SHARE_EPSILON].sort_values(ascending=False)
     current_values = basket["value_df"].loc[latest_date].reindex(current_weights.index)
-    today_gl = basket["prices"].pct_change().loc[latest_date].reindex(current_weights.index)
+    today_gl = basket["asset_returns"].loc[latest_date].reindex(current_weights.index)
     total_gl = current_values.div(basket["basis"].reindex(current_weights.index).replace(0, pd.NA)) - 1.0
 
     current_weights_df = (
@@ -331,9 +335,7 @@ def _current_weights_frame(basket: dict) -> pd.DataFrame:
     ).map(lambda value: f"{value:.2f}%")
     current_weights_df["Today G/L"] = current_weights.index.map(today_gl.get).map(_format_pct)
     current_weights_df["Total G/L (approx.)"] = current_weights.index.map(total_gl.get).map(_format_pct)
-    current_weights_df["_Quantity"] = current_weights.index.map(basket["quantities"].get).map(
-        lambda value: "" if pd.isna(value) else f"{float(value):.10f}"
-    )
+    current_weights_df["_Quantity"] = ""
     current_weights_df["_BasisApprox"] = current_weights.index.map(basket["basis"].get).map(
         lambda value: "" if pd.isna(value) else f"{float(value):.10f}"
     )
@@ -416,18 +418,27 @@ def create_model_portfolio_report(
     prices = _price_matrix(symbols, requested_start_date)
     effective_start_date = _first_common_start_date(prices, symbols, requested_start_date)
     working_prices = prices[prices.index >= effective_start_date].copy().ffill()
+    dividends = get_polygon_dividends(symbols, working_prices.index.min().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d"))
+    asset_total_returns = compute_total_return_returns(working_prices, dividends)
 
-    portfolio_basket = _build_buy_and_hold_basket(working_prices, portfolio_holdings, effective_start_date)
+    portfolio_basket = _build_buy_and_hold_basket(
+        working_prices,
+        portfolio_holdings,
+        asset_total_returns,
+        effective_start_date,
+    )
     if benchmark_config["mode"] == "ticker":
         benchmark_basket = _build_buy_and_hold_basket(
             working_prices,
             [{"ticker": benchmark_config["ticker"], "weight": 1.0}],
+            asset_total_returns,
             effective_start_date,
         )
     else:
         benchmark_basket = _build_buy_and_hold_basket(
             working_prices,
             benchmark_config["holdings"],
+            asset_total_returns,
             effective_start_date,
         )
 

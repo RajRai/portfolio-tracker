@@ -2,7 +2,9 @@ import pandas as pd
 import pytest
 
 from src.reports.analyze_fidelity import (
+    _apply_future_split_adjustments,
     _is_invalid_sell_post_quantity,
+    _statement_cash_income_series,
     _upsert_accounts_index_entry,
     build_remaining_lot_book,
 )
@@ -138,3 +140,43 @@ def test_upsert_accounts_index_entry_restores_canonical_account_order():
 
     assert [account["id"] for account in ordered_accounts] == ["OPTICAL", "CLOUD", "RETIREMENT"]
     assert ordered_accounts[-1]["report"] == "/reports/report_9.html"
+
+
+def test_statement_cash_income_series_excludes_reinvestments():
+    df = pd.DataFrame(
+        [
+            {"Run Date": "2025-01-01", "Action": "DIVIDEND RECEIVED", "Quantity": "", "Amount": "5.00"},
+            {"Run Date": "2025-01-02", "Action": "REINVESTMENT", "Quantity": "0.1", "Amount": "5.00"},
+            {"Run Date": "2025-01-03", "Action": "INTEREST PAID", "Quantity": "", "Amount": "1.50"},
+        ]
+    )
+    index = pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03"])
+
+    income = _statement_cash_income_series(df, index)
+
+    assert income.loc[pd.Timestamp("2025-01-01")] == pytest.approx(5.0)
+    assert income.loc[pd.Timestamp("2025-01-02")] == pytest.approx(0.0)
+    assert income.loc[pd.Timestamp("2025-01-03")] == pytest.approx(1.5)
+
+
+def test_apply_future_split_adjustments_converts_trades_to_current_share_basis():
+    trades = pd.DataFrame(
+        [
+            {"Run Date": pd.Timestamp("2020-01-01"), "symbol": "AAA", "quantity": 1.0, "price": 100.0},
+            {"Run Date": pd.Timestamp("2025-01-01"), "symbol": "AAA", "quantity": 1.0, "price": 50.0},
+        ]
+    )
+    split_events = {
+        "AAA": [
+            {"execution_date": "2021-07-20", "split_from": 1, "split_to": 4},
+            {"execution_date": "2024-06-10", "split_from": 1, "split_to": 10},
+        ]
+    }
+
+    adjusted = _apply_future_split_adjustments(trades, split_events)
+
+    assert adjusted.loc[0, "quantity"] == pytest.approx(40.0)
+    assert adjusted.loc[0, "price"] == pytest.approx(2.5)
+    assert adjusted.loc[0, "display_price"] == pytest.approx(100.0)
+    assert adjusted.loc[1, "quantity"] == pytest.approx(1.0)
+    assert adjusted.loc[1, "price"] == pytest.approx(50.0)

@@ -13,7 +13,13 @@ import quantstats as qs
 import pandas as pd
 import numpy as np
 
-from src.reports.polygon import get_polygon_prices
+from src.reports.polygon import (
+    compute_total_return_returns,
+    future_split_factor_for_date,
+    get_polygon_dividends,
+    get_polygon_prices,
+    get_polygon_splits,
+)
 from src.util import BASE_DIR
 
 qs.extend_pandas()
@@ -71,6 +77,50 @@ def _regression_beta(portfolio_returns: pd.Series, benchmark_returns: pd.Series)
 
 def _is_invalid_sell_post_quantity(post_trade_qty: float, eps: float = SHARE_EPSILON) -> bool:
     return float(post_trade_qty) < -eps
+
+
+def _statement_cash_income_series(df: pd.DataFrame, price_index: pd.Index) -> pd.Series:
+    if price_index.empty:
+        return pd.Series(dtype=float)
+
+    quantity = pd.to_numeric(df.get("Quantity"), errors="coerce").fillna(0.0)
+    amount = pd.to_numeric(df.get("Amount"), errors="coerce")
+    income_mask = (
+        df["Action"].str.contains(r"DIVIDEND|INTEREST|DISTRIBUTION", flags=re.I, na=False)
+        & ~df["Action"].str.contains(r"REINVEST", flags=re.I, na=False)
+        & amount.notna()
+        & amount.ne(0)
+        & quantity.abs().le(SHARE_EPSILON)
+    )
+    cash_rows = df[income_mask].copy()
+    if cash_rows.empty:
+        return pd.Series(0.0, index=price_index)
+
+    cash_rows["Run Date"] = pd.to_datetime(cash_rows["Run Date"], errors="coerce")
+    cash_rows["amount"] = pd.to_numeric(cash_rows["Amount"], errors="coerce").fillna(0.0)
+
+    income_series = pd.Series(0.0, index=price_index)
+    for _, row in cash_rows.iterrows():
+        income_date = price_index[price_index >= row["Run Date"]].min()
+        if pd.isna(income_date):
+            continue
+        income_series.loc[income_date] += float(row["amount"])
+    return income_series
+
+
+def _apply_future_split_adjustments(trades: pd.DataFrame, split_events_by_symbol: dict[str, list[dict]]) -> pd.DataFrame:
+    if trades.empty:
+        return trades
+
+    adjusted = trades.copy()
+    adjusted["display_price"] = adjusted["price"]
+    adjusted["split_adjustment"] = adjusted.apply(
+        lambda row: future_split_factor_for_date(split_events_by_symbol.get(row["symbol"], []), row["Run Date"]),
+        axis=1,
+    )
+    adjusted["quantity"] = adjusted["quantity"] * adjusted["split_adjustment"]
+    adjusted["price"] = adjusted["price"] / adjusted["split_adjustment"].replace(0, 1.0)
+    return adjusted
 
 
 def _lot_holding_start(lot: dict) -> pd.Timestamp:
@@ -409,6 +459,11 @@ def main():
         #  4. Portfolio reconstruction and returns
         # ============================================================
 
+        split_events_by_symbol = get_polygon_splits(symbols, start, end)
+        benchmark_dividends = get_polygon_dividends([BENCHMARK], start, end)
+        statement_cash_income = _statement_cash_income_series(df, prices.index)
+        trades = _apply_future_split_adjustments(trades, split_events_by_symbol)
+
         position_df = pd.DataFrame(0.0, index=prices.index, columns=symbols)
         valid_trades = []
 
@@ -442,6 +497,8 @@ def main():
         weights = value_df.div(value_df.sum(axis=1), axis=0).fillna(0)
         asset_returns = prices.pct_change().fillna(0)
         returns = (weights.shift(1) * asset_returns).sum(axis=1).fillna(0)
+        cash_income_returns = statement_cash_income.div(value_df.sum(axis=1).shift(1).replace(0, np.nan)).fillna(0)
+        returns = (returns + cash_income_returns).fillna(0)
         returns = add_missing_zeros(returns)
 
         # ============================================================
@@ -453,7 +510,7 @@ def main():
         out_path = out_dir / f"report_{i}.html"
 
         spy_df = all_prices[[BENCHMARK]]
-        spy_returns = spy_df[BENCHMARK].pct_change().fillna(0)
+        spy_returns = compute_total_return_returns(spy_df, benchmark_dividends)[BENCHMARK].fillna(0)
 
         qs.reports.html(
             returns,
@@ -599,12 +656,12 @@ def main():
         trades_csv_path = out_dir / f"trades_{i}.csv"
 
         current_weights_df.to_csv(weights_csv_path, index=False)
-        trades_pct[["Run Date", "symbol", "side", "price", "Trade Size (% of Account)"]].rename(
+        trades_pct[["Run Date", "symbol", "side", "display_price", "Trade Size (% of Account)"]].rename(
             columns={
                 "Run Date": "Date",
                 "symbol": "Ticker",
                 "side": "Action",
-                "price": "Trade Price ($)",
+                "display_price": "Trade Price ($)",
             }
         ).to_csv(trades_csv_path, index=False)
 
@@ -641,7 +698,7 @@ def main():
             "Run Date": "Date",
             "symbol": "Ticker",
             "side": "Action",
-            "price": "Trade Price ($)",
+            "display_price": "Trade Price ($)",
             "PercentOfAccount": "Trade Size (% of Account)"
         })
         trades_pct["Date"] = trades_pct["Date"].dt.strftime("%Y-%m-%d")

@@ -308,3 +308,32 @@ def test_yfinance_prefix_cache_reused(tmp_path, monkeypatch):
     pf.get_polygon_prices(["AAPL"], "2020-10-13", "2025-10-15")
 
     assert download_calls == [("AAPL", "2020-10-13", "2020-10-15")]
+
+
+def test_future_split_factor_for_date_uses_future_splits_only():
+    split_events = [
+        {"execution_date": "2021-07-20", "split_from": 1, "split_to": 4},
+        {"execution_date": "2024-06-10", "split_from": 1, "split_to": 10},
+    ]
+
+    assert pf.future_split_factor_for_date(split_events, "2020-01-01") == pytest.approx(40.0)
+    assert pf.future_split_factor_for_date(split_events, "2021-07-20") == pytest.approx(10.0)
+    assert pf.future_split_factor_for_date(split_events, "2025-01-01") == pytest.approx(1.0)
+
+
+def test_compute_total_return_returns_adds_dividend_yield_to_price_return():
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 99.0, 101.0]},
+        index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+    )
+    dividends = pd.DataFrame(
+        {"AAA": [0.0, 2.0, 0.0]},
+        index=prices.index,
+    )
+
+    returns = pf.compute_total_return_returns(prices, dividends)
+
+    assert list(returns.index) == list(prices.index)
+    assert returns.loc[pd.Timestamp("2026-01-01"), "AAA"] == pytest.approx(0.0)
+    assert returns.loc[pd.Timestamp("2026-01-02"), "AAA"] == pytest.approx(0.01)
+    assert returns.loc[pd.Timestamp("2026-01-03"), "AAA"] == pytest.approx(101.0 / 99.0 - 1.0)

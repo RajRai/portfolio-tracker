@@ -31,6 +31,7 @@ def test_create_model_portfolio_report_writes_tool_only_artifacts(monkeypatch, t
     )
 
     monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
     monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
 
     payload = model_portfolio.create_model_portfolio_report(
@@ -76,6 +77,7 @@ def test_create_model_portfolio_report_supports_portfolio_benchmark(monkeypatch,
     )
 
     monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
     monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
 
     payload = model_portfolio.create_model_portfolio_report(
@@ -117,6 +119,7 @@ def test_create_model_portfolio_report_explains_when_start_date_is_after_latest_
     )
 
     monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
     monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
 
     with pytest.raises(ToolDataError, match=r"Try an earlier trading day\. Latest available market date was 2026-05-16\."):
