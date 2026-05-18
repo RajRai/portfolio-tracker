@@ -22,6 +22,7 @@ import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import AccountTabs from "./components/AccountTabs.jsx";
+import ModelPortfolioToolPage from "./components/ModelPortfolioToolPage.jsx";
 import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
 import { deepClone } from "@mui/x-data-grid/internals";
@@ -103,12 +104,14 @@ const TOOL_PATHS = {
     home: "/",
     marketCap: "/tools/market-cap-weights",
     earnings: "/tools/earnings-calendar",
+    modelPortfolio: "/tools/model-portfolio-report",
 };
 
 const pageFromPath = (path) => {
     const cleanPath = path.replace(/\/$/, "") || "/";
     if (cleanPath === TOOL_PATHS.marketCap) return "marketCap";
     if (cleanPath === TOOL_PATHS.earnings) return "earnings";
+    if (cleanPath === TOOL_PATHS.modelPortfolio) return "modelPortfolio";
     return "home";
 };
 
@@ -587,6 +590,7 @@ export default function App() {
             >
                 {page === "marketCap" && <StockToolsPage tool="marketCap" accounts={accounts} />}
                 {page === "earnings" && <StockToolsPage tool="earnings" accounts={accounts} />}
+                {page === "modelPortfolio" && <ModelPortfolioToolPage accounts={accounts} />}
                 {page === "home" && accounts[active] && (
                     <AccountTabs account={accounts[active]} liveStore={liveStore} />
                 )}
@@ -664,6 +668,9 @@ function DesktopToolsMenu({ page, onNavigate }) {
                 <MenuItem selected={page === "earnings"} onClick={() => handleNavigate("earnings")}>
                     Earnings Calendar
                 </MenuItem>
+                <MenuItem selected={page === "modelPortfolio"} onClick={() => handleNavigate("modelPortfolio")}>
+                    Model Portfolio Report
+                </MenuItem>
             </Menu>
         </>
     );
@@ -718,6 +725,14 @@ function MobileMenu({ onNavigate }) {
                     }}
                 >
                     Earnings Calendar
+                </MenuItem>
+                <MenuItem
+                    onClick={() => {
+                        handleClose();
+                        onNavigate("modelPortfolio");
+                    }}
+                >
+                    Model Portfolio Report
                 </MenuItem>
 
                 <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>

@@ -6,12 +6,8 @@ import {
     Checkbox,
     Chip,
     Divider,
-    FormControl,
-    InputLabel,
     LinearProgress,
-    MenuItem,
     Paper,
-    Select,
     Stack,
     Table,
     TableBody,
@@ -21,6 +17,7 @@ import {
     TextField,
     Typography,
 } from "@mui/material";
+import { SourcePicker, formatPercent, postJson, splitTickers } from "./toolsShared.jsx";
 
 const todayString = () => new Date().toISOString().slice(0, 10);
 
@@ -29,16 +26,6 @@ const futureDateString = (days) => {
     date.setDate(date.getDate() + days);
     return date.toISOString().slice(0, 10);
 };
-
-const splitTickers = (value) =>
-    String(value || "")
-        .toUpperCase()
-        .split(/[\s,;]+/)
-        .map((ticker) => ticker.trim().replace(/^\$/, ""))
-        .filter((ticker) => /^[A-Z0-9][A-Z0-9.-]*$/.test(ticker));
-
-const formatPercent = (value) =>
-    value == null ? "" : `${(Number(value) * 100).toFixed(2)}%`;
 
 const formatCurrency = (value) => {
     if (value == null || Number.isNaN(Number(value))) return "";
@@ -82,19 +69,6 @@ const parseMarketCapValue = (value) => {
     const marketCap = amount * (multiplier || 0);
     return Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null;
 };
-
-async function postJson(url, body) {
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(payload.error || "Request failed");
-    }
-    return payload;
-}
 
 function StockListEditor({ tickers, onChange, sourceHoldings }) {
     const [entry, setEntry] = useState("");
@@ -164,41 +138,6 @@ function StockListEditor({ tickers, onChange, sourceHoldings }) {
                 </Typography>
             )}
         </Box>
-    );
-}
-
-function SourcePicker({
-    accounts,
-    accountId,
-    setAccountId,
-    onLoad,
-    loading,
-}) {
-    return (
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.25} alignItems={{ md: "center" }}>
-            <FormControl size="small" sx={{ minWidth: 260 }} disabled={!accounts.length}>
-                <InputLabel>Portfolio</InputLabel>
-                <Select
-                    value={accountId}
-                    label="Portfolio"
-                    onChange={(event) => setAccountId(event.target.value)}
-                >
-                    {accounts.map((account) => (
-                        <MenuItem key={account.id} value={account.id}>
-                            {account.name}
-                        </MenuItem>
-                    ))}
-                </Select>
-            </FormControl>
-
-            <Button
-                variant="outlined"
-                onClick={onLoad}
-                disabled={loading || !accountId}
-            >
-                Load Portfolio
-            </Button>
-        </Stack>
     );
 }
 

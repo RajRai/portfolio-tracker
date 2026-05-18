@@ -16,6 +16,7 @@ from flask import Flask, send_from_directory, jsonify, request, Response, stream
 import requests
 from websockets.sync.client import connect
 
+from src.reports.model_portfolio import create_model_portfolio_report
 from src.tools import ToolDataError, earnings_calendar, market_cap_weights, stock_source
 from src.util import BASE_DIR
 
@@ -1218,6 +1219,15 @@ def tool_earnings_calendar():
             body.get("end"),
             os.environ.get("POLYGON_API_KEY"),
         )
+    except ToolDataError as exc:
+        return _tool_error_response(exc)
+    return jsonify(payload)
+
+
+@app.route("/api/tools/model-portfolio-report", methods=["POST"])
+def tool_model_portfolio_report():
+    try:
+        payload = create_model_portfolio_report(_json_body(), OUT_DIR)
     except ToolDataError as exc:
         return _tool_error_response(exc)
     return jsonify(payload)

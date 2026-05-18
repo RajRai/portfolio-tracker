@@ -575,7 +575,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     }, [account, Plotly, charts]);
 
     useEffect(() => {
-        if (!account?.weights || !data) return;
+        if (!account?.weights || !data || account?.disable_live || account?.disableLive) return;
         let cancelled = false;
 
         fetch(account.weights)
@@ -608,7 +608,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         return () => {
             cancelled = true;
         };
-    }, [account?.weights, data]);
+    }, [account?.disableLive, account?.disable_live, account?.weights, data]);
 
     const liveReturns = useMemo(() => {
         if (!liveInputs?.tickers?.length) return null;
