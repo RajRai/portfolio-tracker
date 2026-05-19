@@ -16,7 +16,7 @@ from src.reports.analyze_fidelity import (
     add_missing_zeros,
 )
 from src.reports.polygon import compute_total_return_returns, get_polygon_dividends, get_polygon_prices
-from src.tools import ToolDataError, normalize_tickers
+from src.tools import ToolDataError, estimate_market_cap_weights, normalize_tickers
 from src.util import BASE_DIR
 
 qs.extend_pandas()
@@ -56,7 +56,9 @@ def _normalize_weighted_holdings(rows, label: str) -> list[dict]:
     for row in rows:
         ticker = normalize_tickers((row or {}).get("ticker"))[:1]
         weight = _to_float((row or {}).get("weight"))
-        if not ticker or weight is None or weight <= 0:
+        if weight is None:
+            weight = 1.0
+        if not ticker or weight <= 0:
             continue
         symbol = ticker[0]
         if symbol not in totals:
@@ -75,6 +77,11 @@ def _normalize_weighted_holdings(rows, label: str) -> list[dict]:
         }
         for ticker in order
     ]
+
+
+def _weighting_mode(value, fallback: str = "manual") -> str:
+    mode = str(value or fallback).strip().lower()
+    return "market_cap_start" if mode == "market_cap_start" else "manual"
 
 
 def _parse_benchmark_config(benchmark: dict) -> dict:
@@ -99,6 +106,7 @@ def _parse_benchmark_config(benchmark: dict) -> dict:
             "label": label,
             "holdings": holdings,
             "symbols": [holding["ticker"] for holding in holdings],
+            "weighting_mode": _weighting_mode(benchmark.get("weightingMode")),
         }
 
     raise ToolDataError("Choose a benchmark ticker or portfolio", 400)
@@ -177,6 +185,49 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
     return (
         f"The requested start date was adjusted from {requested_text} to {effective_text} "
         "based on the first common pricing date."
+    )
+
+
+def _apply_start_date_market_cap_weights(
+    holdings: list[dict],
+    prices: pd.DataFrame,
+    effective_start_date: pd.Timestamp,
+    label: str,
+) -> tuple[list[dict], str]:
+    tickers = [holding["ticker"] for holding in holdings]
+    latest_prices = {}
+    as_of_prices = {}
+    for ticker in tickers:
+        series = prices[ticker].dropna() if ticker in prices.columns else pd.Series(dtype=float)
+        latest_prices[ticker] = series.iloc[-1] if not series.empty else None
+        as_of_prices[ticker] = prices.at[effective_start_date, ticker] if ticker in prices.columns else None
+
+    payload = estimate_market_cap_weights(tickers, latest_prices, as_of_prices)
+    if payload["missing"]:
+        return holdings, (
+            f"{label} kept the entered weights because start-date market cap weighting was unavailable for: "
+            f"{', '.join(payload['missing'])}."
+        )
+
+    weight_by_ticker = {
+        row["ticker"]: row["weight"]
+        for row in payload["rows"]
+        if row.get("weight") is not None
+    }
+    if any(holding["ticker"] not in weight_by_ticker for holding in holdings):
+        return holdings, (
+            f"{label} kept the entered weights because start-date market cap weighting was incomplete."
+        )
+    weighted_holdings = [
+        {
+            "ticker": holding["ticker"],
+            "weight": weight_by_ticker[holding["ticker"]],
+        }
+        for holding in holdings
+    ]
+    return weighted_holdings, (
+        f"{label} weights were estimated from current market caps scaled to {effective_start_date.strftime('%Y-%m-%d')} "
+        "using the historical/current price ratio."
     )
 
 
@@ -408,6 +459,7 @@ def create_model_portfolio_report(
     report_name = str(body.get("reportName") or "Model Portfolio").strip() or "Model Portfolio"
     requested_start_date = _parse_date(body.get("startDate"), "Start date")
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
+    portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
     benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
 
     symbols = list(
@@ -418,6 +470,23 @@ def create_model_portfolio_report(
     prices = _price_matrix(symbols, requested_start_date)
     effective_start_date = _first_common_start_date(prices, symbols, requested_start_date)
     working_prices = prices[prices.index >= effective_start_date].copy().ffill()
+    weighting_warnings = []
+    if portfolio_weighting_mode == "market_cap_start":
+        portfolio_holdings, portfolio_weighting_warning = _apply_start_date_market_cap_weights(
+            portfolio_holdings,
+            working_prices,
+            effective_start_date,
+            "Portfolio",
+        )
+        weighting_warnings.append(portfolio_weighting_warning)
+    if benchmark_config["mode"] == "portfolio" and benchmark_config.get("weighting_mode") == "market_cap_start":
+        benchmark_config["holdings"], benchmark_weighting_warning = _apply_start_date_market_cap_weights(
+            benchmark_config["holdings"],
+            working_prices,
+            effective_start_date,
+            "Benchmark",
+        )
+        weighting_warnings.append(benchmark_weighting_warning)
     dividends = get_polygon_dividends(symbols, working_prices.index.min().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d"))
     asset_total_returns = compute_total_return_returns(working_prices, dividends)
 
@@ -500,6 +569,7 @@ def create_model_portfolio_report(
     )
     if start_date_warning:
         warnings.append(start_date_warning)
+    warnings.extend(weighting_warnings)
 
     return {
         "account": viewer_account,

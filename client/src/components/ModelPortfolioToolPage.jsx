@@ -3,7 +3,9 @@ import {
     Alert,
     Box,
     Button,
+    Checkbox,
     Divider,
+    FormControlLabel,
     LinearProgress,
     MenuItem,
     Paper,
@@ -49,14 +51,14 @@ const parseWeightText = (value) => {
         if (!trimmed) continue;
 
         const normalized = trimmed.replace(/[:,=]/g, " ").replace(/\s+/g, " ");
-        const match = normalized.match(/^(\$?[A-Za-z0-9][A-Za-z0-9.-]*)\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))%?$/);
+        const match = normalized.match(/^(\$?[A-Za-z0-9][A-Za-z0-9.-]*)(?:\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))%?)?$/);
         if (!match) {
             invalidLines.push(trimmed);
             continue;
         }
 
         const ticker = normalizeTicker(match[1]);
-        const weight = Number(match[2]);
+        const weight = match[2] == null ? 1 : Number(match[2]);
         if (!ticker || !Number.isFinite(weight) || weight <= 0) {
             invalidLines.push(trimmed);
             continue;
@@ -96,6 +98,8 @@ function WeightInputSection({
     onChange,
     parsed,
     showSourcePicker = true,
+    useMarketCapWeights,
+    onUseMarketCapWeightsChange,
 }) {
     return (
         <Box>
@@ -133,13 +137,31 @@ function WeightInputSection({
                 label={`${title} Weights`}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
-                placeholder={"AAPL 25\nMSFT 35\nNVDA 40"}
-                helperText="One holding per line. Use formats like AAPL 25 or MSFT, 12.5."
+                placeholder={"AAPL\nMSFT 35\nNVDA 40"}
+                helperText="One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1."
+            />
+
+            <FormControlLabel
+                sx={{ mt: 1 }}
+                control={
+                    <Checkbox
+                        size="small"
+                        checked={useMarketCapWeights}
+                        onChange={(event) => onUseMarketCapWeightsChange(event.target.checked)}
+                    />
+                }
+                label="Market cap weight as of the start date when possible"
             />
 
             {!!parsed.invalidLines.length && (
                 <Alert severity="warning" sx={{ mt: 1.5 }}>
                     Fix {parsed.invalidLines.length} invalid line{parsed.invalidLines.length === 1 ? "" : "s"} before generating the report.
+                </Alert>
+            )}
+
+            {useMarketCapWeights && (
+                <Alert severity="info" sx={{ mt: 1.5 }}>
+                    Entered weights are used only as a fallback here. When possible, the tool will estimate start-date market caps from current market cap and the historical price ratio.
                 </Alert>
             )}
 
@@ -182,6 +204,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const [benchmarkWeightsText, setBenchmarkWeightsText] = useState("");
     const [benchmarkTicker, setBenchmarkTicker] = useState("VT");
     const [benchmarkMode, setBenchmarkMode] = useState("ticker");
+    const [portfolioUseMarketCapWeights, setPortfolioUseMarketCapWeights] = useState(false);
+    const [benchmarkUseMarketCapWeights, setBenchmarkUseMarketCapWeights] = useState(false);
     const [portfolioSourceSummary, setPortfolioSourceSummary] = useState(null);
     const [benchmarkSourceSummary, setBenchmarkSourceSummary] = useState(null);
     const [loadingPortfolioSource, setLoadingPortfolioSource] = useState(false);
@@ -260,6 +284,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             const payload = await postJson("/api/tools/model-portfolio-report", {
                 reportName,
                 startDate,
+                weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
                 holdings: portfolioParsed.rows.map((row) => ({
                     ticker: row.ticker,
                     weight: row.weight,
@@ -276,6 +301,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                 benchmarkMode === "existingPortfolio"
                                     ? benchmarkSourceSummary?.label || "Benchmark Portfolio"
                                     : "Custom Benchmark Portfolio",
+                            weightingMode: benchmarkUseMarketCapWeights ? "market_cap_start" : "manual",
                             holdings: benchmarkParsed.rows.map((row) => ({
                                 ticker: row.ticker,
                                 weight: row.weight,
@@ -334,6 +360,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         value={portfolioWeightsText}
                         onChange={setPortfolioWeightsText}
                         parsed={portfolioParsed}
+                        useMarketCapWeights={portfolioUseMarketCapWeights}
+                        onUseMarketCapWeightsChange={setPortfolioUseMarketCapWeights}
                     />
 
                     <Divider />
@@ -381,6 +409,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                     onChange={setBenchmarkWeightsText}
                                     parsed={benchmarkParsed}
                                     showSourcePicker={benchmarkNeedsWeights && benchmarkMode === "existingPortfolio"}
+                                    useMarketCapWeights={benchmarkUseMarketCapWeights}
+                                    onUseMarketCapWeightsChange={setBenchmarkUseMarketCapWeights}
                                 />
                             )}
                         </Stack>

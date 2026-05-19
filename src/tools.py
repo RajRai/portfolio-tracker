@@ -275,6 +275,81 @@ def market_cap_weights(tickers, api_key: str | None = None) -> dict:
     }
 
 
+def estimate_market_cap_weights(tickers, latest_prices: dict, as_of_prices: dict, api_key: str | None = None) -> dict:
+    normalized = normalize_tickers(tickers)
+    if not normalized:
+        raise ToolDataError("Add at least one stock ticker", 400)
+
+    details = _fetch_ticker_overviews(normalized, api_key)
+    yfinance_candidates = [
+        ticker
+        for ticker in normalized
+        if not _is_etf_overview(details.get(ticker) or {})
+        and not (_to_float((details.get(ticker) or {}).get("market_cap")) or 0) > 0
+    ]
+    yfinance_details = _fetch_yfinance_market_caps(yfinance_candidates)
+    rows = []
+    total = 0.0
+
+    for ticker in normalized:
+        item = details.get(ticker) or {}
+        fallback_item = yfinance_details.get(ticker) or {}
+        polygon_market_cap = _to_float(item.get("market_cap"))
+        yfinance_market_cap = _to_float(fallback_item.get("market_cap"))
+        current_market_cap = None
+        current_method = None
+        note = None
+
+        if polygon_market_cap is not None and polygon_market_cap > 0:
+            current_market_cap = polygon_market_cap
+            current_method = "Polygon market cap"
+        elif yfinance_market_cap is not None and yfinance_market_cap > 0:
+            current_market_cap = yfinance_market_cap
+            current_method = "Yahoo Finance market cap"
+
+        latest_price = _to_float(latest_prices.get(ticker))
+        as_of_price = _to_float(as_of_prices.get(ticker))
+        estimated_market_cap = None
+        method = None
+
+        if current_market_cap is not None and latest_price and latest_price > 0 and as_of_price and as_of_price > 0:
+            estimated_market_cap = current_market_cap * as_of_price / latest_price
+            method = f"{current_method} scaled by historical price ratio"
+            total += estimated_market_cap
+        elif current_market_cap is None:
+            note = "Market cap unavailable - ETF" if _is_etf_overview(item) else "Market cap unavailable"
+        else:
+            note = "Historical price unavailable for estimation"
+
+        rows.append({
+            "ticker": ticker,
+            "name": item.get("name") or fallback_item.get("name") or ticker,
+            "market_cap": estimated_market_cap,
+            "market_value": estimated_market_cap,
+            "valuation_method": method,
+            "exchange": item.get("primary_exchange") or fallback_item.get("exchange"),
+            "type": item.get("type") or fallback_item.get("type"),
+            "currency": item.get("currency_name") or fallback_item.get("currency"),
+            "weight": None,
+            "note": note,
+            "current_market_cap": current_market_cap,
+            "latest_price": latest_price,
+            "as_of_price": as_of_price,
+        })
+
+    for row in rows:
+        if total > 0 and row["market_cap"] and row["market_cap"] > 0:
+            row["weight"] = row["market_cap"] / total
+
+    rows.sort(key=lambda row: row["weight"] or -1, reverse=True)
+    return {
+        "tickers": normalized,
+        "total_market_cap": total if total > 0 else None,
+        "rows": rows,
+        "missing": [row["ticker"] for row in rows if row["weight"] is None],
+    }
+
+
 def _parse_date(value: str | None, fallback: date) -> date:
     if not value:
         return fallback

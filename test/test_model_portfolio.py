@@ -137,3 +137,138 @@ def test_create_model_portfolio_report_explains_when_start_date_is_after_latest_
             },
             out_dir=tmp_path,
         )
+
+
+def test_normalize_weighted_holdings_defaults_missing_weight_to_one():
+    holdings = model_portfolio._normalize_weighted_holdings(
+        [
+            {"ticker": "AAA"},
+            {"ticker": "BBB", "weight": 2},
+            {"ticker": "AAA"},
+        ],
+        "portfolio",
+    )
+
+    assert holdings == [
+        {"ticker": "AAA", "weight": pytest.approx(0.5)},
+        {"ticker": "BBB", "weight": pytest.approx(0.5)},
+    ]
+
+
+def test_create_model_portfolio_report_applies_start_date_market_cap_weighting_to_portfolio_and_benchmark(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 11.0, 12.0],
+            "BBB": [20.0, 21.0, 22.0],
+            "CCC": [30.0, 31.0, 32.0],
+        },
+        index=pd.to_datetime(["2026-03-03", "2026-03-04", "2026-03-05"]),
+    )
+    estimate_calls = []
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+
+    def fake_estimate_market_cap_weights(tickers, latest_prices, as_of_prices, api_key=None):
+        estimate_calls.append((tuple(tickers), dict(latest_prices), dict(as_of_prices)))
+        if tuple(tickers) == ("AAA", "BBB"):
+            return {
+                "rows": [
+                    {"ticker": "AAA", "weight": 0.8},
+                    {"ticker": "BBB", "weight": 0.2},
+                ],
+                "missing": [],
+            }
+        return {
+            "rows": [
+                {"ticker": "BBB", "weight": 0.25},
+                {"ticker": "CCC", "weight": 0.75},
+            ],
+            "missing": [],
+        }
+
+    monkeypatch.setattr(model_portfolio, "estimate_market_cap_weights", fake_estimate_market_cap_weights)
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Market Cap Model",
+            "startDate": "2026-03-03",
+            "weightingMode": "market_cap_start",
+            "holdings": [
+                {"ticker": "AAA", "weight": 60},
+                {"ticker": "BBB", "weight": 40},
+            ],
+            "benchmark": {
+                "mode": "portfolio",
+                "label": "Benchmark Cap Weight",
+                "weightingMode": "market_cap_start",
+                "holdings": [
+                    {"ticker": "BBB", "weight": 70},
+                    {"ticker": "CCC", "weight": 30},
+                ],
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    assert [call[0] for call in estimate_calls] == [("AAA", "BBB"), ("BBB", "CCC")]
+    assert payload["warnings"] == [
+        "Portfolio weights were estimated from current market caps scaled to 2026-03-03 using the historical/current price ratio.",
+        "Benchmark weights were estimated from current market caps scaled to 2026-03-03 using the historical/current price ratio.",
+    ]
+
+    trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
+    trades = pd.read_csv(trades_path)
+    assert trades["Trade Size (% of Account)"].tolist() == ["80.00%", "20.00%"]
+
+
+def test_create_model_portfolio_report_falls_back_to_entered_weights_when_market_cap_estimate_is_unavailable(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 11.0, 12.0],
+            "BBB": [20.0, 21.0, 22.0],
+            "VT": [100.0, 101.0, 102.0],
+        },
+        index=pd.to_datetime(["2026-04-06", "2026-04-07", "2026-04-08"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+    monkeypatch.setattr(
+        model_portfolio,
+        "estimate_market_cap_weights",
+        lambda tickers, latest_prices, as_of_prices, api_key=None: {
+            "rows": [
+                {"ticker": "AAA", "weight": None},
+                {"ticker": "BBB", "weight": None},
+            ],
+            "missing": ["AAA", "BBB"],
+        },
+    )
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Fallback Model",
+            "startDate": "2026-04-06",
+            "weightingMode": "market_cap_start",
+            "holdings": [
+                {"ticker": "AAA", "weight": 60},
+                {"ticker": "BBB", "weight": 40},
+            ],
+            "benchmark": {
+                "mode": "ticker",
+                "ticker": "VT",
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    assert payload["warnings"] == [
+        "Portfolio kept the entered weights because start-date market cap weighting was unavailable for: AAA, BBB."
+    ]
+
+    trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
+    trades = pd.read_csv(trades_path)
+    assert trades["Trade Size (% of Account)"].tolist() == ["60.00%", "40.00%"]

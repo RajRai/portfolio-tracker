@@ -128,6 +128,34 @@ def test_market_cap_weights_uses_yfinance_fallback(monkeypatch):
     assert payload["missing"] == []
 
 
+def test_estimate_market_cap_weights_scales_current_market_caps_to_start_date(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_ticker_overviews",
+        lambda tickers, api_key=None: {
+            "AAPL": {"name": "Apple Inc", "market_cap": 300},
+            "MSFT": {"name": "Microsoft Corp", "market_cap": 100},
+        },
+    )
+    monkeypatch.setattr(tools, "_fetch_yfinance_market_caps", lambda tickers: {})
+
+    payload = tools.estimate_market_cap_weights(
+        ["aapl", "msft"],
+        latest_prices={"AAPL": 12, "MSFT": 20},
+        as_of_prices={"AAPL": 10, "MSFT": 10},
+        api_key="key",
+    )
+
+    rows_by_ticker = {row["ticker"]: row for row in payload["rows"]}
+    assert payload["total_market_cap"] == pytest.approx(300)
+    assert rows_by_ticker["AAPL"]["market_cap"] == pytest.approx(250)
+    assert rows_by_ticker["AAPL"]["weight"] == pytest.approx(5 / 6)
+    assert rows_by_ticker["AAPL"]["valuation_method"] == "Polygon market cap scaled by historical price ratio"
+    assert rows_by_ticker["MSFT"]["market_cap"] == pytest.approx(50)
+    assert rows_by_ticker["MSFT"]["weight"] == pytest.approx(1 / 6)
+    assert payload["missing"] == []
+
+
 def test_earnings_calendar_uses_yfinance(monkeypatch):
     calls = []
 
