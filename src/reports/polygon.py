@@ -323,12 +323,16 @@ def get_polygon_prices(symbols, start, end):
     now = _now_et()
     today_str = now.strftime("%Y-%m-%d")
     today_date = now.normalize()
+    today_date_naive = today_date.tz_localize(None)
     start_ts = pd.Timestamp(start).normalize()
-    polygon_history_start = (today_date.tz_localize(None) - pd.DateOffset(years=5)).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    effective_end_ts = min(end_ts, today_date_naive)
+    polygon_history_start = (today_date_naive - pd.DateOffset(years=5)).normalize()
     polygon_start = max(start_ts, polygon_history_start).strftime("%Y-%m-%d")
 
     cutoff_days = 1
-    fetch_end = (now - pd.Timedelta(days=cutoff_days)).strftime("%Y-%m-%d")
+    fetch_end_ts = min(effective_end_ts, (now - pd.Timedelta(days=cutoff_days)).normalize().tz_localize(None))
+    fetch_end = fetch_end_ts.strftime("%Y-%m-%d")
 
     daily_series = {}
     intraday_prices = {}
@@ -336,8 +340,14 @@ def get_polygon_prices(symbols, start, end):
     for sym in symbols:
         series_parts = []
 
-        if start_ts < polygon_history_start:
-            yfinance_series = _fetch_yfinance_daily_series(sym, start, polygon_start, today_date)
+        yfinance_end_ts = min(polygon_history_start, effective_end_ts + pd.Timedelta(days=1))
+        if start_ts < yfinance_end_ts:
+            yfinance_series = _fetch_yfinance_daily_series(
+                sym,
+                start_ts.strftime("%Y-%m-%d"),
+                yfinance_end_ts.strftime("%Y-%m-%d"),
+                today_date,
+            )
             if not yfinance_series.empty:
                 series_parts.append(yfinance_series)
 
@@ -352,9 +362,11 @@ def get_polygon_prices(symbols, start, end):
         series = series[~series.index.duplicated(keep="last")]
 
         daily_series[sym] = series
-        intraday_prices[sym] = _fetch_intraday_price(sym, today_str, api_key)
+        intraday_prices[sym] = _fetch_intraday_price(sym, today_str, api_key) if effective_end_ts == today_date_naive else None
 
-    any_intraday_today = any(price is not None for price in intraday_prices.values())
+    any_intraday_today = effective_end_ts == today_date_naive and any(
+        price is not None for price in intraday_prices.values()
+    )
     all_prices = {}
 
     for sym, series in daily_series.items():
@@ -368,4 +380,7 @@ def get_polygon_prices(symbols, start, end):
     for sym, series in all_prices.items():
         all_prices[sym].index = series.index.tz_localize(None)
 
-    return pd.DataFrame(all_prices)
+    prices = pd.DataFrame(all_prices)
+    if prices.empty:
+        return prices
+    return prices[(prices.index >= start_ts) & (prices.index <= effective_end_ts)]

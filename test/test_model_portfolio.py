@@ -38,6 +38,7 @@ def test_create_model_portfolio_report_writes_tool_only_artifacts(monkeypatch, t
         {
             "reportName": "Public Model",
             "startDate": "2026-01-01",
+            "endDate": "2026-01-04",
             "holdings": [
                 {"ticker": "AAA", "weight": 60},
                 {"ticker": "BBB", "weight": 40},
@@ -53,8 +54,35 @@ def test_create_model_portfolio_report_writes_tool_only_artifacts(monkeypatch, t
     assert payload["account"]["disable_live"] is True
     assert payload["account"]["report"].startswith("/reports/tool-model-portfolios/")
     assert payload["effectiveStartDate"] == "2026-01-02"
+    assert payload["effectiveEndDate"] == "2026-01-04"
     assert payload["warnings"] == [
         "The selected start date, 2026-01-01, was not a market trading day, so the report starts on 2026-01-02."
+    ]
+    assert payload["rangeInfo"]["symbolRanges"] == [
+        {
+            "ticker": "AAA",
+            "scope": "portfolio",
+            "firstDate": "2026-01-02",
+            "lastDate": "2026-01-04",
+            "limitsStart": False,
+            "limitsEnd": False,
+        },
+        {
+            "ticker": "BBB",
+            "scope": "portfolio",
+            "firstDate": "2026-01-02",
+            "lastDate": "2026-01-04",
+            "limitsStart": False,
+            "limitsEnd": False,
+        },
+        {
+            "ticker": "VT",
+            "scope": "benchmark",
+            "firstDate": "2026-01-02",
+            "lastDate": "2026-01-04",
+            "limitsStart": False,
+            "limitsEnd": False,
+        },
     ]
 
     tool_dir = tmp_path / "tool-model-portfolios"
@@ -84,6 +112,7 @@ def test_create_model_portfolio_report_supports_portfolio_benchmark(monkeypatch,
         {
             "reportName": "Custom Benchmark",
             "startDate": "2026-02-03",
+            "endDate": "2026-02-05",
             "holdings": [
                 {"ticker": "AAA", "weight": 50},
                 {"ticker": "BBB", "weight": 50},
@@ -194,6 +223,7 @@ def test_create_model_portfolio_report_applies_start_date_market_cap_weighting_t
         {
             "reportName": "Market Cap Model",
             "startDate": "2026-03-03",
+            "endDate": "2026-03-05",
             "weightingMode": "market_cap_start",
             "holdings": [
                 {"ticker": "AAA", "weight": 60},
@@ -252,6 +282,7 @@ def test_create_model_portfolio_report_falls_back_to_entered_weights_when_market
         {
             "reportName": "Fallback Model",
             "startDate": "2026-04-06",
+            "endDate": "2026-04-08",
             "weightingMode": "market_cap_start",
             "holdings": [
                 {"ticker": "AAA", "weight": 60},
@@ -272,3 +303,76 @@ def test_create_model_portfolio_report_falls_back_to_entered_weights_when_market
     trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
     trades = pd.read_csv(trades_path)
     assert trades["Trade Size (% of Account)"].tolist() == ["60.00%", "40.00%"]
+
+
+def test_create_model_portfolio_report_reports_symbols_that_limit_the_common_window(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [None, 10.0, 11.0, 12.0, None],
+            "BBB": [20.0, 21.0, 22.0, 23.0, 24.0],
+            "VT": [100.0, 101.0, 102.0, 103.0, 104.0],
+        },
+        index=pd.to_datetime(["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Range Limits",
+            "startDate": "2026-06-01",
+            "endDate": "2026-06-05",
+            "holdings": [
+                {"ticker": "AAA", "weight": 60},
+                {"ticker": "BBB", "weight": 40},
+            ],
+            "benchmark": {
+                "mode": "ticker",
+                "ticker": "VT",
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    assert payload["effectiveStartDate"] == "2026-06-02"
+    assert payload["effectiveEndDate"] == "2026-06-04"
+    assert payload["warnings"] == [
+        "The report starts on 2026-06-02 because these symbols did not have price history on 2026-06-01: AAA.",
+        "The report ends on 2026-06-04 because these symbols did not have price history on 2026-06-05: AAA.",
+    ]
+    assert payload["rangeInfo"] == {
+        "requestedStartDate": "2026-06-01",
+        "effectiveStartDate": "2026-06-02",
+        "requestedEndDate": "2026-06-05",
+        "effectiveEndDate": "2026-06-04",
+        "startLimitedBy": ["AAA"],
+        "endLimitedBy": ["AAA"],
+        "symbolRanges": [
+            {
+                "ticker": "AAA",
+                "scope": "portfolio",
+                "firstDate": "2026-06-02",
+                "lastDate": "2026-06-04",
+                "limitsStart": True,
+                "limitsEnd": True,
+            },
+            {
+                "ticker": "BBB",
+                "scope": "portfolio",
+                "firstDate": "2026-06-01",
+                "lastDate": "2026-06-05",
+                "limitsStart": False,
+                "limitsEnd": False,
+            },
+            {
+                "ticker": "VT",
+                "scope": "benchmark",
+                "firstDate": "2026-06-01",
+                "lastDate": "2026-06-05",
+                "limitsStart": False,
+                "limitsEnd": False,
+            },
+        ],
+    }

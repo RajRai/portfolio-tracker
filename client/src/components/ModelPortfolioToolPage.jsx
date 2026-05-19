@@ -22,14 +22,24 @@ import {
 import AccountTabs from "./AccountTabs.jsx";
 import { SourcePicker, formatPercent, normalizeTicker, postJson } from "./toolsShared.jsx";
 
+const rollWeekendBack = (date) => {
+    const next = new Date(date);
+    while (next.getDay() === 0 || next.getDay() === 6) {
+        next.setDate(next.getDate() - 1);
+    }
+    return next;
+};
+
 const defaultStartDateString = () => {
     const date = new Date();
     date.setFullYear(date.getFullYear() - 1);
-    while (date.getDay() === 0 || date.getDay() === 6) {
-        date.setDate(date.getDate() - 1);
-    }
-    return date.toISOString().slice(0, 10);
+    return rollWeekendBack(date).toISOString().slice(0, 10);
 };
+
+const defaultEndDateString = () => rollWeekendBack(new Date()).toISOString().slice(0, 10);
+
+const scopeLabel = (scope) =>
+    scope === "both" ? "Both" : scope === "benchmark" ? "Benchmark" : "Portfolio";
 
 const formatWeightsText = (holdings) =>
     (holdings || [])
@@ -198,6 +208,7 @@ function WeightInputSection({
 export default function ModelPortfolioToolPage({ accounts }) {
     const [reportName, setReportName] = useState("Model Portfolio");
     const [startDate, setStartDate] = useState(defaultStartDateString());
+    const [endDate, setEndDate] = useState(defaultEndDateString());
     const [portfolioSourceAccountId, setPortfolioSourceAccountId] = useState(accounts[0]?.id || "");
     const [benchmarkSourceAccountId, setBenchmarkSourceAccountId] = useState(accounts[0]?.id || "");
     const [portfolioWeightsText, setPortfolioWeightsText] = useState("");
@@ -214,6 +225,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const [warnings, setWarnings] = useState([]);
     const [error, setError] = useState("");
     const [viewerAccount, setViewerAccount] = useState(null);
+    const [rangeInfo, setRangeInfo] = useState(null);
 
     React.useEffect(() => {
         if (!portfolioSourceAccountId && accounts[0]?.id) {
@@ -263,9 +275,12 @@ export default function ModelPortfolioToolPage({ accounts }) {
     };
 
     const benchmarkNeedsWeights = benchmarkMode === "existingPortfolio" || benchmarkMode === "customPortfolio";
+    const datesValid = !startDate || !endDate || startDate <= endDate;
     const canGenerate =
         !!reportName.trim() &&
         !!startDate &&
+        !!endDate &&
+        datesValid &&
         portfolioParsed.rows.length > 0 &&
         portfolioParsed.invalidLines.length === 0 &&
         (
@@ -279,11 +294,13 @@ export default function ModelPortfolioToolPage({ accounts }) {
         setError("");
         setWarnings([]);
         setViewerAccount(null);
+        setRangeInfo(null);
 
         try {
             const payload = await postJson("/api/tools/model-portfolio-report", {
                 reportName,
                 startDate,
+                endDate,
                 weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
                 holdings: portfolioParsed.rows.map((row) => ({
                     ticker: row.ticker,
@@ -310,6 +327,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             });
             setWarnings(payload.warnings || []);
             setViewerAccount(payload.account || null);
+            setRangeInfo(payload.rangeInfo || null);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -346,7 +364,23 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             sx={{ minWidth: { md: 220 } }}
                             helperText="Uses the next available trading day on or after this date."
                         />
+                        <TextField
+                            size="small"
+                            type="date"
+                            label="End Date"
+                            value={endDate}
+                            onChange={(event) => setEndDate(event.target.value)}
+                            InputLabelProps={{ shrink: true }}
+                            sx={{ minWidth: { md: 220 } }}
+                            helperText="Uses the last available trading day on or before this date."
+                        />
                     </Stack>
+
+                    {!datesValid && (
+                        <Alert severity="warning">
+                            End date must be on or after the start date.
+                        </Alert>
+                    )}
 
                     <WeightInputSection
                         title="Model Portfolio"
@@ -437,10 +471,60 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 </Alert>
             ))}
 
-            <Paper sx={{ borderRadius: 2, overflow: "hidden", minHeight: viewerAccount ? "80vh" : "auto" }}>
+            {rangeInfo && (
+                <Paper sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2, mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontSize: "1rem", fontWeight: 600, mb: 0.75 }}>
+                        Data Availability
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                        Requested window: {rangeInfo.requestedStartDate} through {rangeInfo.requestedEndDate}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                        Common report window: {rangeInfo.effectiveStartDate} through {rangeInfo.effectiveEndDate}
+                    </Typography>
+
+                    {!!rangeInfo.startLimitedBy?.length && (
+                        <Typography variant="body2" sx={{ mb: 0.5 }}>
+                            Start limited by: {rangeInfo.startLimitedBy.join(", ")}
+                        </Typography>
+                    )}
+                    {!!rangeInfo.endLimitedBy?.length && (
+                        <Typography variant="body2" sx={{ mb: 1.5 }}>
+                            End limited by: {rangeInfo.endLimitedBy.join(", ")}
+                        </Typography>
+                    )}
+
+                    <Table size="small">
+                        <TableHead>
+                            <TableRow>
+                                <TableCell>Ticker</TableCell>
+                                <TableCell>Scope</TableCell>
+                                <TableCell align="right">First Date</TableCell>
+                                <TableCell align="right">Last Date</TableCell>
+                                <TableCell align="center">Limits Start</TableCell>
+                                <TableCell align="center">Limits End</TableCell>
+                            </TableRow>
+                        </TableHead>
+                        <TableBody>
+                            {(rangeInfo.symbolRanges || []).map((row) => (
+                                <TableRow key={row.ticker}>
+                                    <TableCell>{row.ticker}</TableCell>
+                                    <TableCell>{scopeLabel(row.scope)}</TableCell>
+                                    <TableCell align="right">{row.firstDate || "\u2014"}</TableCell>
+                                    <TableCell align="right">{row.lastDate || "\u2014"}</TableCell>
+                                    <TableCell align="center">{row.limitsStart ? "Yes" : ""}</TableCell>
+                                    <TableCell align="center">{row.limitsEnd ? "Yes" : ""}</TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </Paper>
+            )}
+
+            <Paper sx={{ borderRadius: 2, overflow: "hidden" }}>
                 {viewerAccount ? (
-                    <Box sx={{ height: "80vh", display: "flex" }}>
-                        <AccountTabs account={viewerAccount} liveStore={null} />
+                    <Box>
+                        <AccountTabs account={viewerAccount} liveStore={null} embedded />
                     </Box>
                 ) : (
                     <Box sx={{ p: { xs: 1.5, sm: 2 } }}>

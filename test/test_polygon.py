@@ -176,6 +176,19 @@ def test_no_intraday_today_uses_last_trading_day(tmp_path, monkeypatch):
     assert list(map(float, prices["SPY"].values)) == [100.0, 103.0]
 
 
+def test_requested_end_date_before_today_excludes_today_intraday(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache" / ".cache" / "polygon"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pf, "CACHE_DIR", cache_dir)
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2025-10-15 10:00:00")
+
+    prices = pf.get_polygon_prices(["AAPL"], "2025-10-13", "2025-10-14")
+
+    assert list(prices.index) == [pd.Timestamp("2025-10-13"), pd.Timestamp("2025-10-14")]
+    assert list(map(float, prices["AAPL"].values)) == [100.0, 103.0]
+
+
 class CallRecorder:
     def __init__(self):
         self.calls = []

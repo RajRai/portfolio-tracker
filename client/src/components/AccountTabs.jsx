@@ -15,7 +15,7 @@ function umamiTrack(eventName, data) {
     }
 }
 
-function AccountTabs({ account, liveStore }) {
+function AccountTabs({ account, liveStore, embedded = false }) {
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
     const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
@@ -56,8 +56,8 @@ function AccountTabs({ account, liveStore }) {
             {/* ===== Inner Tabs Header ===== */}
             <Box
                 sx={{
-                    position: "sticky",
-                    top: 0,
+                    position: embedded ? "static" : "sticky",
+                    top: embedded ? "auto" : 0,
                     zIndex: 1000,
                     backgroundColor: "background.paper",
                     minWidth: 0,
@@ -86,10 +86,10 @@ function AccountTabs({ account, liveStore }) {
             {/* ===== Scrollable Content Area ===== */}
             <Box
                 sx={{
-                    flex: 1,
+                    flex: embedded ? "0 0 auto" : 1,
                     minHeight: 0,
                     minWidth: 0,
-                    overflow: tableTab ? "hidden" : "auto",
+                    overflow: embedded ? "visible" : tableTab ? "hidden" : "auto",
                     display: "flex",
                     flexDirection: "column",
                 }}
@@ -129,10 +129,10 @@ function AccountTabs({ account, liveStore }) {
                         live
                         liveStore={liveStore}
                         onHeaderTextChange={setHoldingsHeaderText}
-                        fillHeight
+                        fillHeight={!embedded}
                     />
                 )}
-                {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" fillHeight />}
+                {tab === "transactions" && <CSVTable src={account.trades} title="Trade History" fillHeight={!embedded} />}
             </Box>
         </Box>
     );

@@ -46,6 +46,16 @@ def _parse_date(value: str | None, label: str) -> pd.Timestamp:
     return parsed
 
 
+def _today_date() -> pd.Timestamp:
+    return pd.Timestamp(datetime.now().date()).normalize()
+
+
+def _format_date(value) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
 def _normalize_weighted_holdings(rows, label: str) -> list[dict]:
     if not isinstance(rows, list):
         raise ToolDataError(f"Add at least one {label.lower()} holding", 400)
@@ -112,16 +122,28 @@ def _parse_benchmark_config(benchmark: dict) -> dict:
     raise ToolDataError("Choose a benchmark ticker or portfolio", 400)
 
 
-def _price_matrix(symbols: list[str], start_date: pd.Timestamp) -> pd.DataFrame:
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    fetch_start = min(start_date, pd.Timestamp(datetime.now().date()) - pd.Timedelta(days=7))
-    prices = get_polygon_prices(symbols, fetch_start.strftime("%Y-%m-%d"), end_date)
+def _price_matrix(symbols: list[str], start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
+    fetch_start = min(start_date, end_date - pd.Timedelta(days=7))
+    prices = get_polygon_prices(symbols, fetch_start.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
     if prices.empty:
         raise ToolDataError(
             "No price history was found for the selected holdings. "
             "Try an earlier start date.",
             502,
         )
+    prices = prices.reindex(columns=symbols).sort_index()
+    prices.index = pd.to_datetime(prices.index).normalize()
+    prices = prices[~prices.index.duplicated(keep="last")]
+    return prices
+
+
+def _current_price_matrix(symbols: list[str]) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame(columns=symbols)
+
+    end_date = _today_date()
+    start_date = end_date - pd.Timedelta(days=21)
+    prices = get_polygon_prices(symbols, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
     prices = prices.reindex(columns=symbols).sort_index()
     prices.index = pd.to_datetime(prices.index).normalize()
     prices = prices[~prices.index.duplicated(keep="last")]
@@ -157,6 +179,47 @@ def _first_common_start_date(prices: pd.DataFrame, symbols: list[str], requested
     return pd.Timestamp(eligible.index[0]).normalize()
 
 
+def _last_common_end_date(prices: pd.DataFrame, symbols: list[str], requested_end: pd.Timestamp) -> pd.Timestamp:
+    past_prices = prices[prices.index <= requested_end]
+    if past_prices.empty:
+        earliest_available = prices.index.min() if not prices.empty else None
+        earliest_text = (
+            f" Earliest available market date was {pd.Timestamp(earliest_available).strftime('%Y-%m-%d')}."
+            if earliest_available is not None and not pd.isna(earliest_available)
+            else ""
+        )
+        raise ToolDataError(
+            "No price history was found on or before the selected end date. "
+            "Try a later trading day."
+            f"{earliest_text}",
+            400,
+        )
+
+    eligible = past_prices.dropna(subset=symbols, how="any")
+    if eligible.empty:
+        missing = [symbol for symbol in symbols if past_prices[symbol].dropna().empty]
+        if missing:
+            raise ToolDataError(
+                f"Missing price history on or before the end date for: {', '.join(missing)}",
+                400,
+            )
+        raise ToolDataError("No common end date was found for every selected symbol", 400)
+
+    return pd.Timestamp(eligible.index[-1]).normalize()
+
+
+def _boundary_limiting_symbols(prices: pd.DataFrame, symbols: list[str], requested_date: pd.Timestamp) -> list[str]:
+    if requested_date not in prices.index:
+        return []
+
+    requested_row = prices.loc[requested_date, symbols]
+    return [
+        symbol
+        for symbol, value in requested_row.items()
+        if pd.isna(value)
+    ]
+
+
 def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_start: pd.Timestamp, effective_start: pd.Timestamp) -> str | None:
     if effective_start <= requested_start:
         return None
@@ -170,12 +233,13 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
             f"so the report starts on {effective_text}."
         )
 
-    requested_row = prices.loc[requested_start, symbols]
-    missing_symbols = [
-        symbol
-        for symbol, value in requested_row.items()
-        if pd.isna(value)
-    ]
+    if requested_start > prices.index.max():
+        return (
+            f"The selected start date, {requested_text}, was after the latest available market date, "
+            f"so the report starts on {effective_text}."
+        )
+
+    missing_symbols = _boundary_limiting_symbols(prices, symbols, requested_start)
     if missing_symbols:
         return (
             f"The report starts on {effective_text} because these symbols did not have "
@@ -188,9 +252,90 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
     )
 
 
+def _end_date_warning(prices: pd.DataFrame, symbols: list[str], requested_end: pd.Timestamp, effective_end: pd.Timestamp) -> str | None:
+    if effective_end >= requested_end:
+        return None
+
+    requested_text = requested_end.strftime("%Y-%m-%d")
+    effective_text = effective_end.strftime("%Y-%m-%d")
+
+    if requested_end > prices.index.max():
+        return (
+            f"The selected end date, {requested_text}, was after the latest available market date, "
+            f"so the report ends on {effective_text}."
+        )
+
+    if requested_end not in prices.index:
+        return (
+            f"The selected end date, {requested_text}, was not a market trading day, "
+            f"so the report ends on {effective_text}."
+        )
+
+    missing_symbols = _boundary_limiting_symbols(prices, symbols, requested_end)
+    if missing_symbols:
+        return (
+            f"The report ends on {effective_text} because these symbols did not have "
+            f"price history on {requested_text}: {', '.join(missing_symbols)}."
+        )
+
+    return (
+        f"The requested end date was adjusted from {requested_text} to {effective_text} "
+        "based on the last common pricing date."
+    )
+
+
+def _symbol_range_rows(
+    prices: pd.DataFrame,
+    portfolio_symbols: list[str],
+    benchmark_symbols: list[str],
+    effective_start: pd.Timestamp,
+    effective_end: pd.Timestamp,
+    requested_start: pd.Timestamp,
+    requested_end: pd.Timestamp,
+) -> dict:
+    portfolio_set = set(portfolio_symbols)
+    benchmark_set = set(benchmark_symbols)
+    ordered_symbols = list(dict.fromkeys(portfolio_symbols + benchmark_symbols))
+    bounded_prices = prices[(prices.index >= requested_start) & (prices.index <= requested_end)]
+    start_limited_by = set(_boundary_limiting_symbols(prices, ordered_symbols, requested_start)) if effective_start > requested_start else set()
+    end_limited_by = set(_boundary_limiting_symbols(prices, ordered_symbols, requested_end)) if effective_end < requested_end else set()
+    rows = []
+
+    for symbol in ordered_symbols:
+        series = bounded_prices[symbol].dropna() if symbol in bounded_prices.columns else pd.Series(dtype=float)
+        if symbol in portfolio_set and symbol in benchmark_set:
+            scope = "both"
+        elif symbol in portfolio_set:
+            scope = "portfolio"
+        else:
+            scope = "benchmark"
+
+        rows.append(
+            {
+                "ticker": symbol,
+                "scope": scope,
+                "firstDate": _format_date(series.index.min() if not series.empty else None),
+                "lastDate": _format_date(series.index.max() if not series.empty else None),
+                "limitsStart": symbol in start_limited_by,
+                "limitsEnd": symbol in end_limited_by,
+            }
+        )
+
+    return {
+        "requestedStartDate": requested_start.strftime("%Y-%m-%d"),
+        "effectiveStartDate": effective_start.strftime("%Y-%m-%d"),
+        "requestedEndDate": requested_end.strftime("%Y-%m-%d"),
+        "effectiveEndDate": effective_end.strftime("%Y-%m-%d"),
+        "startLimitedBy": sorted(start_limited_by),
+        "endLimitedBy": sorted(end_limited_by),
+        "symbolRanges": rows,
+    }
+
+
 def _apply_start_date_market_cap_weights(
     holdings: list[dict],
     prices: pd.DataFrame,
+    current_prices: pd.DataFrame,
     effective_start_date: pd.Timestamp,
     label: str,
 ) -> tuple[list[dict], str]:
@@ -198,8 +343,8 @@ def _apply_start_date_market_cap_weights(
     latest_prices = {}
     as_of_prices = {}
     for ticker in tickers:
-        series = prices[ticker].dropna() if ticker in prices.columns else pd.Series(dtype=float)
-        latest_prices[ticker] = series.iloc[-1] if not series.empty else None
+        current_series = current_prices[ticker].dropna() if ticker in current_prices.columns else pd.Series(dtype=float)
+        latest_prices[ticker] = current_series.iloc[-1] if not current_series.empty else None
         as_of_prices[ticker] = prices.at[effective_start_date, ticker] if ticker in prices.columns else None
 
     payload = estimate_market_cap_weights(tickers, latest_prices, as_of_prices)
@@ -307,6 +452,8 @@ def _build_chart_payload(
     benchmark_config: dict,
     requested_start_date: pd.Timestamp,
     effective_start_date: pd.Timestamp,
+    requested_end_date: pd.Timestamp,
+    effective_end_date: pd.Timestamp,
 ) -> dict:
     portfolio_returns = add_missing_zeros(portfolio_returns)
     benchmark_returns = add_missing_zeros(benchmark_returns).reindex(portfolio_returns.index, fill_value=0.0)
@@ -342,6 +489,8 @@ def _build_chart_payload(
         "meta": {
             "requested_start_date": requested_start_date.strftime("%Y-%m-%d"),
             "effective_start_date": effective_start_date.strftime("%Y-%m-%d"),
+            "requested_end_date": requested_end_date.strftime("%Y-%m-%d"),
+            "effective_end_date": effective_end_date.strftime("%Y-%m-%d"),
             "disable_live": True,
         },
         "portfolio": {
@@ -458,6 +607,9 @@ def create_model_portfolio_report(
 ) -> dict:
     report_name = str(body.get("reportName") or "Model Portfolio").strip() or "Model Portfolio"
     requested_start_date = _parse_date(body.get("startDate"), "Start date")
+    requested_end_date = _parse_date(body.get("endDate") or _today_date().strftime("%Y-%m-%d"), "End date")
+    if requested_end_date < requested_start_date:
+        raise ToolDataError("End date must be on or after the start date", 400)
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
     portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
     benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
@@ -467,14 +619,41 @@ def create_model_portfolio_report(
             [holding["ticker"] for holding in portfolio_holdings] + benchmark_config["symbols"]
         )
     )
-    prices = _price_matrix(symbols, requested_start_date)
+    prices = _price_matrix(symbols, requested_start_date, requested_end_date)
     effective_start_date = _first_common_start_date(prices, symbols, requested_start_date)
-    working_prices = prices[prices.index >= effective_start_date].copy().ffill()
+    effective_end_date = _last_common_end_date(prices, symbols, requested_end_date)
+    if effective_end_date < effective_start_date:
+        raise ToolDataError("No common date range was found between the selected start and end dates", 400)
+
+    working_prices = prices[
+        (prices.index >= effective_start_date) & (prices.index <= effective_end_date)
+    ].copy().ffill()
     weighting_warnings = []
+    needs_market_cap_weighting = (
+        portfolio_weighting_mode == "market_cap_start"
+        or (
+            benchmark_config["mode"] == "portfolio"
+            and benchmark_config.get("weighting_mode") == "market_cap_start"
+        )
+    )
+    current_prices = pd.DataFrame()
+    if needs_market_cap_weighting:
+        market_cap_symbols = list(
+            dict.fromkeys(
+                [holding["ticker"] for holding in portfolio_holdings]
+                + (
+                    [holding["ticker"] for holding in benchmark_config["holdings"]]
+                    if benchmark_config["mode"] == "portfolio"
+                    else []
+                )
+            )
+        )
+        current_prices = _current_price_matrix(market_cap_symbols)
     if portfolio_weighting_mode == "market_cap_start":
         portfolio_holdings, portfolio_weighting_warning = _apply_start_date_market_cap_weights(
             portfolio_holdings,
             working_prices,
+            current_prices,
             effective_start_date,
             "Portfolio",
         )
@@ -483,11 +662,16 @@ def create_model_portfolio_report(
         benchmark_config["holdings"], benchmark_weighting_warning = _apply_start_date_market_cap_weights(
             benchmark_config["holdings"],
             working_prices,
+            current_prices,
             effective_start_date,
             "Benchmark",
         )
         weighting_warnings.append(benchmark_weighting_warning)
-    dividends = get_polygon_dividends(symbols, working_prices.index.min().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d"))
+    dividends = get_polygon_dividends(
+        symbols,
+        working_prices.index.min().strftime("%Y-%m-%d"),
+        effective_end_date.strftime("%Y-%m-%d"),
+    )
     asset_total_returns = compute_total_return_returns(working_prices, dividends)
 
     portfolio_basket = _build_buy_and_hold_basket(
@@ -548,6 +732,8 @@ def create_model_portfolio_report(
         benchmark_config,
         requested_start_date,
         effective_start_date,
+        requested_end_date,
+        effective_end_date,
     )
     interactive_json_path.write_text(json.dumps(chart_payload, indent=2), encoding="utf-8")
 
@@ -562,17 +748,36 @@ def create_model_portfolio_report(
 
     warnings = []
     start_date_warning = _start_date_warning(
-        working_prices,
+        prices,
         symbols,
         requested_start_date,
         effective_start_date,
     )
     if start_date_warning:
         warnings.append(start_date_warning)
+    end_date_warning = _end_date_warning(
+        prices,
+        symbols,
+        requested_end_date,
+        effective_end_date,
+    )
+    if end_date_warning:
+        warnings.append(end_date_warning)
     warnings.extend(weighting_warnings)
+    range_info = _symbol_range_rows(
+        prices,
+        [holding["ticker"] for holding in portfolio_holdings],
+        benchmark_config["symbols"],
+        effective_start_date,
+        effective_end_date,
+        requested_start_date,
+        requested_end_date,
+    )
 
     return {
         "account": viewer_account,
         "effectiveStartDate": effective_start_date.strftime("%Y-%m-%d"),
+        "effectiveEndDate": effective_end_date.strftime("%Y-%m-%d"),
+        "rangeInfo": range_info,
         "warnings": warnings,
     }
