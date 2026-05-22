@@ -3,8 +3,12 @@ import pytest
 
 from src.reports.analyze_fidelity import (
     _apply_future_split_adjustments,
+    _apply_inception_day_return_override,
+    _estimate_inception_day_return,
+    _expand_fetch_start_for_short_report_window,
     _is_invalid_sell_post_quantity,
     _statement_cash_income_series,
+    _write_quantstats_report,
     _upsert_accounts_index_entry,
     build_remaining_lot_book,
 )
@@ -180,3 +184,83 @@ def test_apply_future_split_adjustments_converts_trades_to_current_share_basis()
     assert adjusted.loc[0, "display_price"] == pytest.approx(100.0)
     assert adjusted.loc[1, "quantity"] == pytest.approx(1.0)
     assert adjusted.loc[1, "price"] == pytest.approx(50.0)
+
+
+def test_expand_fetch_start_for_short_report_window_adds_previous_business_day():
+    start = pd.Timestamp("2026-05-22")
+    end = pd.Timestamp("2026-05-22")
+
+    expanded = _expand_fetch_start_for_short_report_window(start, end)
+
+    assert expanded == pd.Timestamp("2026-05-21")
+
+
+def test_estimate_inception_day_return_uses_basis_and_open_fallback():
+    lot_book = {
+        "AAA": [{"qty": 2.0, "price": 10.0}],
+        "BBB": [{"qty": 1.0, "price": 0.0}],
+    }
+    current_prices = pd.Series({"AAA": 11.0, "BBB": 21.0})
+    session_prices = {"BBB": {"open": 20.0}}
+
+    estimated = _estimate_inception_day_return(
+        lot_book,
+        current_prices,
+        session_prices=session_prices,
+    )
+
+    expected_basis = 2.0 * 10.0 + 1.0 * 20.0
+    expected_current = 2.0 * 11.0 + 1.0 * 21.0
+    assert estimated == pytest.approx(expected_current / expected_basis - 1.0)
+
+
+def test_apply_inception_day_return_override_updates_today_when_portfolio_has_no_prior_value(monkeypatch):
+    monkeypatch.setattr(
+        "src.reports.analyze_fidelity.datetime",
+        type(
+            "FixedDateTime",
+            (),
+            {"now": staticmethod(lambda: pd.Timestamp("2026-05-22 15:30:00").to_pydatetime())},
+        ),
+    )
+
+    returns = pd.Series(
+        [0.0, 0.0],
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    value_df = pd.DataFrame(
+        {"AAA": [0.0, 110.0]},
+        index=returns.index,
+    )
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 110.0]},
+        index=returns.index,
+    )
+    lot_book = {"AAA": [{"qty": 1.0, "price": 100.0}]}
+
+    adjusted = _apply_inception_day_return_override(returns, value_df, lot_book, prices)
+
+    assert adjusted.loc[pd.Timestamp("2026-05-22")] == pytest.approx(0.1)
+
+
+def test_write_quantstats_report_falls_back_for_flat_short_history(tmp_path, monkeypatch):
+    called = {"value": False}
+
+    def fake_html(*args, **kwargs):
+        called["value"] = True
+
+    monkeypatch.setattr("src.reports.analyze_fidelity.qs.reports.html", fake_html)
+
+    report_path = tmp_path / "report.html"
+    generated = _write_quantstats_report(
+        pd.Series([0.0, 0.0], index=pd.to_datetime(["2026-05-21", "2026-05-22"])),
+        pd.Series([0.0, 0.0], index=pd.to_datetime(["2026-05-21", "2026-05-22"])),
+        report_path,
+        title="Portfolio Analysis - Short History",
+        rf=0.0396,
+        short_history_message="Too short",
+    )
+
+    assert generated is False
+    assert called["value"] is False
+    assert "Too short" in report_path.read_text(encoding="utf-8")

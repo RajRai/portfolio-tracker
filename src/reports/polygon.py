@@ -167,20 +167,39 @@ def _fetch_yfinance_daily_series(symbol, start, end, today_date):
     return _daily_series_from_results(cache_data.get("results", []), today_date)
 
 
-def _fetch_intraday_price(symbol, today_str, api_key):
+def _fetch_intraday_summary(symbol, today_str, api_key):
     intra_url = (
         f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/minute/"
         f"{today_str}/{today_str}?adjusted=true&sort=desc&limit=2000&apiKey={api_key}"
     )
     response = requests.get(intra_url)
     if response.status_code != 200:
-        return None
+        return {"current": None, "open": None}
 
     results = response.json().get("results", [])
     if not results:
-        return None
+        return {"current": None, "open": None}
 
-    return float(results[0]["c"])
+    latest_bar = results[0]
+    earliest_bar = results[-1]
+    current_price = latest_bar.get("c")
+    open_price = earliest_bar.get("o", earliest_bar.get("c"))
+    return {
+        "current": (None if current_price is None else float(current_price)),
+        "open": (None if open_price is None else float(open_price)),
+    }
+
+
+def get_polygon_session_prices(symbols, date_like):
+    api_key = os.getenv("POLYGON_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing POLYGON_API_KEY")
+
+    session_day = pd.Timestamp(date_like).strftime("%Y-%m-%d")
+    out = {}
+    for sym in symbols:
+        out[sym] = _fetch_intraday_summary(sym, session_day, api_key)
+    return out
 
 
 def _fetch_polygon_reference_results(symbol, kind, date_field, start, end, api_key):
@@ -312,6 +331,7 @@ def get_polygon_prices(symbols, start, end):
     Behavior:
       - Fetches recent daily closes from Polygon for [polygon_start, fetch_end]
       - Falls back to yfinance for any prefix older than Polygon's 5-year history window
+      - Supports start=end=today by seeding the series from a real intraday print when available
       - Only adds a shared "today" row if at least one symbol has a real intraday print today
       - When that shared row exists, symbols without intraday prints fall back to their last close
       - When no symbol has a real intraday print today, leaves the series at the last trading day
@@ -355,27 +375,36 @@ def get_polygon_prices(symbols, start, end):
         if not polygon_series.empty:
             series_parts.append(polygon_series)
 
+        intraday_summary = (
+            _fetch_intraday_summary(sym, today_str, api_key)
+            if effective_end_ts == today_date_naive
+            else {"current": None, "open": None}
+        )
+        intraday_prices[sym] = intraday_summary["current"]
+
         if not series_parts:
+            daily_series[sym] = pd.Series(dtype=float)
             continue
 
         series = pd.concat(series_parts).sort_index()
         series = series[~series.index.duplicated(keep="last")]
-
         daily_series[sym] = series
-        intraday_prices[sym] = _fetch_intraday_price(sym, today_str, api_key) if effective_end_ts == today_date_naive else None
 
     any_intraday_today = effective_end_ts == today_date_naive and any(
         price is not None for price in intraday_prices.values()
     )
     all_prices = {}
 
-    for sym, series in daily_series.items():
-        if any_intraday_today and len(series) > 0:
-            last_price = intraday_prices[sym]
-            if last_price is None:
+    for sym in symbols:
+        series = daily_series.get(sym, pd.Series(dtype=float)).copy()
+        if any_intraday_today:
+            last_price = intraday_prices.get(sym)
+            if last_price is None and len(series) > 0:
                 last_price = float(series.iloc[-1])
-            series.loc[today_date] = last_price
-        all_prices[sym] = series.sort_index()
+            if last_price is not None:
+                series.loc[today_date] = float(last_price)
+        if not series.empty:
+            all_prices[sym] = series.sort_index()
 
     for sym, series in all_prices.items():
         all_prices[sym].index = series.index.tz_localize(None)

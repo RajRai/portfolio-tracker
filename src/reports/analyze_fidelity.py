@@ -6,6 +6,7 @@ import pandas as pd
 import pytz
 import requests
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from dotenv import load_dotenv
 import quantstats as qs
@@ -18,6 +19,7 @@ from src.reports.polygon import (
     future_split_factor_for_date,
     get_polygon_dividends,
     get_polygon_prices,
+    get_polygon_session_prices,
     get_polygon_splits,
 )
 from src.util import BASE_DIR
@@ -49,6 +51,151 @@ def add_missing_zeros(returns: pd.Series) -> pd.Series:
 
     out_vals = [r_map.get(day, 0.0) for day in full_range]
     return pd.Series(out_vals, index=full_range, name="Date")
+
+
+def _expand_fetch_start_for_short_report_window(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.Timestamp:
+    start_day = pd.Timestamp(start_date).normalize()
+    end_day = pd.Timestamp(end_date).normalize()
+    if start_day == end_day:
+        return (start_day - pd.offsets.BDay(1)).normalize()
+    return start_day
+
+
+def _estimate_inception_day_return(
+    lot_book: dict[str, list[dict]],
+    current_prices: pd.Series,
+    session_prices: dict[str, dict[str, float]] | None = None,
+) -> float | None:
+    total_basis_value = 0.0
+    total_current_value = 0.0
+
+    for symbol, lots in lot_book.items():
+        current_price = current_prices.get(symbol)
+        if pd.isna(current_price):
+            continue
+        current_price = float(current_price)
+        open_price = None
+        if session_prices is not None:
+            open_price = session_prices.get(symbol, {}).get("open")
+
+        for lot in lots:
+            quantity = float(lot.get("qty") or 0.0)
+            if quantity <= SHARE_EPSILON:
+                continue
+
+            basis_price = float(lot.get("price") or 0.0)
+            if basis_price <= SHARE_EPSILON:
+                basis_price = open_price if open_price and open_price > SHARE_EPSILON else current_price
+
+            total_basis_value += quantity * basis_price
+            total_current_value += quantity * current_price
+
+    if total_basis_value <= SHARE_EPSILON or total_current_value <= SHARE_EPSILON:
+        return None
+
+    return float(total_current_value / total_basis_value - 1.0)
+
+
+def _apply_inception_day_return_override(
+    returns: pd.Series,
+    value_df: pd.DataFrame,
+    lot_book: dict[str, list[dict]],
+    prices: pd.DataFrame,
+) -> pd.Series:
+    if returns.empty or value_df.empty or prices.empty:
+        return returns
+
+    latest_date = pd.Timestamp(returns.index.max()).normalize()
+    today = pd.Timestamp(datetime.now().date()).normalize()
+    if latest_date != today:
+        return returns
+
+    portfolio_values = value_df.sum(axis=1).reindex(returns.index).fillna(0.0)
+    current_total_value = float(portfolio_values.loc[latest_date])
+    prior_total_value = float(portfolio_values.shift(1).loc[latest_date]) if len(portfolio_values) > 1 else 0.0
+
+    if current_total_value <= SHARE_EPSILON or prior_total_value > SHARE_EPSILON:
+        return returns
+
+    missing_basis_symbols = {
+        symbol
+        for symbol, lots in lot_book.items()
+        if any(float(lot.get("price") or 0.0) <= SHARE_EPSILON for lot in lots)
+    }
+    session_prices = (
+        get_polygon_session_prices(sorted(missing_basis_symbols), latest_date)
+        if missing_basis_symbols
+        else None
+    )
+    estimated_return = _estimate_inception_day_return(
+        lot_book,
+        prices.loc[latest_date],
+        session_prices=session_prices,
+    )
+    if estimated_return is None or not np.isfinite(estimated_return):
+        return returns
+
+    adjusted_returns = returns.copy()
+    adjusted_returns.loc[latest_date] = estimated_return
+    return adjusted_returns
+
+
+def _write_short_history_report(output_path: Path, title: str, message: str):
+    output_path.write_text(
+        f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(title)}</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #f7f7f7; color: #111827; }}
+    main {{ max-width: 900px; margin: 0 auto; padding: 48px 24px 64px; }}
+    .card {{ background: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px; padding: 24px; }}
+    h1 {{ margin: 0 0 12px; font-size: 2rem; }}
+    p {{ margin: 0; line-height: 1.6; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <h1>{escape(title)}</h1>
+      <p>{escape(message)}</p>
+    </div>
+  </main>
+</body>
+</html>
+""".strip(),
+        encoding="utf-8",
+    )
+
+
+def _write_quantstats_report(
+    returns: pd.Series,
+    benchmark: pd.Series,
+    output_path: Path,
+    title: str,
+    rf: float,
+    short_history_message: str,
+) -> bool:
+    clean_returns = pd.Series(returns).dropna().astype(float)
+    if len(clean_returns) < 2 or clean_returns.nunique(dropna=True) < 2:
+        _write_short_history_report(output_path, title, short_history_message)
+        return False
+
+    try:
+        qs.reports.html(
+            returns,
+            rf=rf,
+            benchmark=benchmark,
+            output=output_path,
+            title=title,
+        )
+        return True
+    except np.linalg.LinAlgError:
+        _write_short_history_report(output_path, title, short_history_message)
+        return False
 
 
 def _regression_beta(portfolio_returns: pd.Series, benchmark_returns: pd.Series) -> float:
@@ -377,7 +524,7 @@ def main():
         #  2. Parse trades
         # ============================================================
 
-        mask = df["Action"].str.contains(r"YOU (BOUGHT|SOLD)", flags=re.I, na=False)
+        mask = df["Action"].str.contains(r"YOU (?:BOUGHT|SOLD)", flags=re.I, na=False)
         trades = df[mask].copy()
         reinvest_mask = (
             df["Action"].str.contains(r"REINVEST", flags=re.I, na=False)
@@ -444,12 +591,19 @@ def main():
         # ============================================================
         #  3. Get daily prices from Polygon.io or cache
         # ============================================================
-        start = df["Run Date"].min().strftime("%Y-%m-%d")
-        end = datetime.now().strftime("%Y-%m-%d")
+        start_date = df["Run Date"].min().normalize()
+        end_date = pd.Timestamp(datetime.now().date()).normalize()
+        fetch_start_date = _expand_fetch_start_for_short_report_window(start_date, end_date)
         all_symbols = list(dict.fromkeys([*symbols, BENCHMARK]))
 
-        print(f"Fetching Polygon prices {start} → {end}")
-        all_prices = get_polygon_prices(all_symbols, start, end)
+        print(
+            f"Fetching Polygon prices {fetch_start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}"
+        )
+        all_prices = get_polygon_prices(
+            all_symbols,
+            fetch_start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+        )
         prices = all_prices.reindex(columns=symbols)
         if prices.empty:
             print(f"⚠️ No pricing data for {account_id}, skipping.")
@@ -459,8 +613,16 @@ def main():
         #  4. Portfolio reconstruction and returns
         # ============================================================
 
-        split_events_by_symbol = get_polygon_splits(symbols, start, end)
-        benchmark_dividends = get_polygon_dividends([BENCHMARK], start, end)
+        split_events_by_symbol = get_polygon_splits(
+            symbols,
+            fetch_start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+        )
+        benchmark_dividends = get_polygon_dividends(
+            [BENCHMARK],
+            fetch_start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+        )
         statement_cash_income = _statement_cash_income_series(df, prices.index)
         trades = _apply_future_split_adjustments(trades, split_events_by_symbol)
 
@@ -499,6 +661,7 @@ def main():
         returns = (weights.shift(1) * asset_returns).sum(axis=1).fillna(0)
         cash_income_returns = statement_cash_income.div(value_df.sum(axis=1).shift(1).replace(0, np.nan)).fillna(0)
         returns = (returns + cash_income_returns).fillna(0)
+        returns = _apply_inception_day_return_override(returns, value_df, lot_book, prices)
         returns = add_missing_zeros(returns)
 
         # ============================================================
@@ -512,15 +675,23 @@ def main():
         spy_df = all_prices[[BENCHMARK]]
         spy_returns = compute_total_return_returns(spy_df, benchmark_dividends)[BENCHMARK].fillna(0)
 
-        qs.reports.html(
+        report_generated = _write_quantstats_report(
             returns,
-            rf=.0396,
-            benchmark=spy_returns,
-            output=out_path,
+            spy_returns,
+            out_path,
             title=f"Portfolio Analysis - {report_name}",
+            rf=0.0396,
+            short_history_message=(
+                "Not enough return history is available for a full QuantStats report yet. "
+                "For newly opened portfolios, today's performance is estimated from trade basis when available, "
+                "and otherwise falls back to today's open."
+            ),
         )
 
-        print(f"✅ Report generated for {account_id}")
+        if report_generated:
+            print(f"✅ Report generated for {account_id}")
+        else:
+            print(f"✅ Short-history report generated for {account_id}")
 
         # =====================  A) Prep series for charts  =====================
         # Normalize both to midnight (no time component) for exact matching
