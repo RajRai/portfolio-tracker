@@ -1,6 +1,7 @@
 // src/components/AccountTabs.jsx
 import React, { memo, useEffect, useState } from "react";
-import { Tabs, Tab, Box, Typography, Button } from "@mui/material";
+import { Tabs, Tab, Box, Typography, Button, Stack } from "@mui/material";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import CSVTable from "./CSVTable.jsx";
 import PlotlyDashboard from "./PlotlyDashboard.jsx";
 import PortfolioAbout from "./PortfolioAbout.jsx";
@@ -56,6 +57,8 @@ function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator
         Boolean(account?.weights) &&
         !account?.disable_live &&
         !account?.disableLive;
+    const hasAbout = Boolean(account?.about?.trim());
+    const showMetaRow = Boolean(headerText) || hasAbout || canOpenBacksimulator;
 
     return (
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
@@ -100,16 +103,17 @@ function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator
                     flexDirection: "column",
                 }}
             >
-                {(headerText || canOpenBacksimulator) && (
+                {showMetaRow && (
                     <Box
                         sx={{
                             px: { xs: 1.5, sm: 2 },
-                            pt: 1,
-                            pb: account.about ? 0.25 : 0.75,
+                            pt: 0.75,
+                            pb: 0.25,
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
                             gap: 1,
+                            flexWrap: "wrap",
                         }}
                     >
                         <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -123,31 +127,45 @@ function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
+                                        fontWeight: 500,
                                     }}
                                 >
                                     {headerText}
                                 </Typography>
                             ) : null}
                         </Box>
-                        {canOpenBacksimulator ? (
-                            <Button
-                                size="small"
-                                variant="outlined"
-                                onClick={() => {
-                                    onOpenBacksimulator?.();
-                                    umamiTrack("open_backsimulator_click", {
-                                        account_id: account?.id,
-                                        account_name: account?.name,
-                                    });
-                                }}
-                                sx={{ flexShrink: 0, textTransform: "none" }}
-                            >
-                                Open in Backsimulator Tool
-                            </Button>
-                        ) : null}
+                        <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0, alignItems: "center" }}>
+                            <PortfolioAbout about={account.about} />
+                            {canOpenBacksimulator ? (
+                                <Button
+                                    size="small"
+                                    variant="text"
+                                    endIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
+                                    onClick={() => {
+                                        onOpenBacksimulator?.();
+                                        umamiTrack("open_backsimulator_click", {
+                                            account_id: account?.id,
+                                            account_name: account?.name,
+                                        });
+                                    }}
+                                    sx={{
+                                        minWidth: 0,
+                                        px: 0.75,
+                                        py: 0.25,
+                                        flexShrink: 0,
+                                        color: "text.secondary",
+                                        textTransform: "none",
+                                        fontSize: "0.78rem",
+                                        fontWeight: 500,
+                                        whiteSpace: "nowrap",
+                                    }}
+                                >
+                                    Backsim
+                                </Button>
+                            ) : null}
+                        </Stack>
                     </Box>
                 )}
-                <PortfolioAbout about={account.about} />
                 {tab === "analytics" && (
                     <PlotlyDashboard
                         key={account.id}

@@ -10,6 +10,7 @@ import {
 import Papa from "papaparse";
 import { alpha, useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
+import { buildCompactLiveLabel } from "../liveQuotes.js";
 
 // 🧩 Lazy-import the light Plotly build on demand
 let PlotlyModule = null;
@@ -681,15 +682,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         () => withLivePerformance(data, liveReturns, liveInputs, liveSnapshot.quotes),
         [data, liveReturns, liveInputs, liveSnapshot]
     );
-    const headerText =
-        liveInputs?.tickers?.length > 0
-            ? liveSnapshot.message ||
-                (liveSnapshot.status === "reconnecting"
-                    ? "Live prices: reconnecting"
-                    : liveSnapshot.status === "connecting"
-                        ? "Live prices: connecting"
-                        : "")
-            : "";
+    const headerText = buildCompactLiveLabel(liveInputs?.tickers || [], liveSnapshot);
 
     useEffect(() => {
         if (!onHeaderTextChange) return undefined;

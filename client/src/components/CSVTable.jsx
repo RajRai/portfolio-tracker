@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import { Box, CircularProgress, Typography, Paper, useMediaQuery } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import { DataGrid } from "@mui/x-data-grid";
+import { buildCompactLiveLabel } from "../liveQuotes.js";
 
 const EM_DASH = "\u2014";
 const EMPTY_LIVE_SNAPSHOT = { status: "off", message: "", quotes: {} };
@@ -219,15 +220,7 @@ export default function CSVTable({ src, live = false, liveStore, onHeaderTextCha
         );
     }, [live, liveTickers, liveSnapshot]);
 
-    const headerText =
-        liveTickers.length > 0
-            ? liveSnapshot.message ||
-                (liveSnapshot.status === "reconnecting"
-                    ? "Live prices: reconnecting"
-                    : liveSnapshot.status === "connecting"
-                        ? "Live prices: connecting"
-                        : "")
-            : "";
+    const headerText = buildCompactLiveLabel(liveTickers, liveSnapshot);
 
     useEffect(() => {
         if (!onHeaderTextChange) return undefined;
