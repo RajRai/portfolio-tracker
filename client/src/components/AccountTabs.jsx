@@ -1,6 +1,6 @@
 // src/components/AccountTabs.jsx
 import React, { memo, useEffect, useState } from "react";
-import { Tabs, Tab, Box, Typography } from "@mui/material";
+import { Tabs, Tab, Box, Typography, Button } from "@mui/material";
 import CSVTable from "./CSVTable.jsx";
 import PlotlyDashboard from "./PlotlyDashboard.jsx";
 import PortfolioAbout from "./PortfolioAbout.jsx";
@@ -15,7 +15,7 @@ function umamiTrack(eventName, data) {
     }
 }
 
-function AccountTabs({ account, liveStore, embedded = false }) {
+function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator = null }) {
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
     const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
@@ -50,6 +50,12 @@ function AccountTabs({ account, liveStore, embedded = false }) {
             : tab === "holdings"
                 ? holdingsHeaderText
                 : "";
+    const canOpenBacksimulator =
+        !embedded &&
+        Boolean(onOpenBacksimulator) &&
+        Boolean(account?.weights) &&
+        !account?.disable_live &&
+        !account?.disableLive;
 
     return (
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
@@ -94,26 +100,54 @@ function AccountTabs({ account, liveStore, embedded = false }) {
                     flexDirection: "column",
                 }}
             >
-                <PortfolioAbout
-                    about={account.about}
-                    leftSlot={
-                        headerText ? (
-                            <Typography
-                                variant="caption"
-                                sx={{
-                                    display: "block",
-                                    color: "text.secondary",
-                                    textAlign: "left",
-                                    whiteSpace: "nowrap",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
+                {(headerText || canOpenBacksimulator) && (
+                    <Box
+                        sx={{
+                            px: { xs: 1.5, sm: 2 },
+                            pt: 1,
+                            pb: account.about ? 0.25 : 0.75,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 1,
+                        }}
+                    >
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                            {headerText ? (
+                                <Typography
+                                    variant="caption"
+                                    sx={{
+                                        display: "block",
+                                        color: "text.secondary",
+                                        textAlign: "left",
+                                        whiteSpace: "nowrap",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                    }}
+                                >
+                                    {headerText}
+                                </Typography>
+                            ) : null}
+                        </Box>
+                        {canOpenBacksimulator ? (
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                    onOpenBacksimulator?.();
+                                    umamiTrack("open_backsimulator_click", {
+                                        account_id: account?.id,
+                                        account_name: account?.name,
+                                    });
                                 }}
+                                sx={{ flexShrink: 0, textTransform: "none" }}
                             >
-                                {headerText}
-                            </Typography>
-                        ) : null
-                    }
-                />
+                                Open in Backsimulator Tool
+                            </Button>
+                        ) : null}
+                    </Box>
+                )}
+                <PortfolioAbout about={account.about} />
                 {tab === "analytics" && (
                     <PlotlyDashboard
                         key={account.id}

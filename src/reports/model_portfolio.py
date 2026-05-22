@@ -94,6 +94,13 @@ def _weighting_mode(value, fallback: str = "manual") -> str:
     return "market_cap_start" if mode == "market_cap_start" else "manual"
 
 
+def _rebalance_period(value, fallback: str = "none") -> str:
+    mode = str(value or fallback).strip().lower().replace("-", "_")
+    if mode in {"none", "daily", "weekly", "monthly", "quarterly"}:
+        return mode
+    return fallback
+
+
 def _parse_benchmark_config(benchmark: dict) -> dict:
     benchmark = benchmark or {}
     mode = str(benchmark.get("mode") or "ticker").strip().lower()
@@ -376,11 +383,34 @@ def _apply_start_date_market_cap_weights(
     )
 
 
+def _rebalance_close_flags(index: pd.Index, rebalance_period: str) -> pd.Series:
+    date_index = pd.DatetimeIndex(index)
+    if len(date_index) == 0:
+        return pd.Series(dtype=bool)
+
+    period = _rebalance_period(rebalance_period)
+    if period == "none":
+        return pd.Series(False, index=date_index, dtype=bool)
+    if period == "daily":
+        return pd.Series(True, index=date_index, dtype=bool)
+
+    if period == "weekly":
+        groups = date_index.to_period("W-FRI")
+    elif period == "monthly":
+        groups = date_index.to_period("M")
+    else:
+        groups = date_index.to_period("Q")
+
+    flags = pd.Series(groups, index=date_index).ne(pd.Series(groups, index=date_index).shift(-1))
+    return flags.fillna(True).astype(bool)
+
+
 def _build_buy_and_hold_basket(
     prices: pd.DataFrame,
     holdings: list[dict],
     asset_total_returns: pd.DataFrame,
     start_date: pd.Timestamp,
+    rebalance_period: str = "none",
 ) -> dict:
     symbols = [holding["ticker"] for holding in holdings]
     basket_prices = prices.reindex(columns=symbols)
@@ -400,11 +430,39 @@ def _build_buy_and_hold_basket(
         basket_asset_returns.iloc[0] = 0.0
 
     basis = pd.Series({holding["ticker"]: float(holding["weight"]) for holding in holdings}, dtype=float)
-    growth_df = (1.0 + basket_asset_returns).cumprod()
-    value_df = growth_df.mul(basis, axis=1)
-    total_value = value_df.sum(axis=1)
-    returns = total_value.pct_change().fillna(0.0)
-    weights_df = value_df.div(total_value.replace(0, pd.NA), axis=0).fillna(0.0)
+    rebalance_flags = _rebalance_close_flags(basket_asset_returns.index, rebalance_period)
+    current_values = basis.copy()
+    previous_total = float(current_values.sum())
+    value_rows = []
+    weight_rows = []
+    return_rows = []
+
+    for idx, date in enumerate(basket_asset_returns.index):
+        if idx > 0:
+            current_values = current_values * (1.0 + basket_asset_returns.loc[date])
+            pre_rebalance_total = float(current_values.sum())
+            daily_return = 0.0 if previous_total == 0 else pre_rebalance_total / previous_total - 1.0
+        else:
+            pre_rebalance_total = previous_total
+            daily_return = 0.0
+
+        if bool(rebalance_flags.loc[date]):
+            current_values = basis * pre_rebalance_total
+
+        close_total = float(current_values.sum())
+        close_weights = (
+            current_values / close_total
+            if close_total
+            else pd.Series(0.0, index=symbols, dtype=float)
+        )
+        value_rows.append(current_values.copy())
+        weight_rows.append(close_weights)
+        return_rows.append(daily_return)
+        previous_total = close_total
+
+    value_df = pd.DataFrame(value_rows, index=basket_asset_returns.index, columns=symbols, dtype=float)
+    weights_df = pd.DataFrame(weight_rows, index=basket_asset_returns.index, columns=symbols, dtype=float)
+    returns = pd.Series(return_rows, index=basket_asset_returns.index, dtype=float)
 
     return {
         "symbols": symbols,
@@ -454,6 +512,8 @@ def _build_chart_payload(
     effective_start_date: pd.Timestamp,
     requested_end_date: pd.Timestamp,
     effective_end_date: pd.Timestamp,
+    portfolio_rebalance_period: str,
+    benchmark_rebalance_period: str,
 ) -> dict:
     portfolio_returns = add_missing_zeros(portfolio_returns)
     benchmark_returns = add_missing_zeros(benchmark_returns).reindex(portfolio_returns.index, fill_value=0.0)
@@ -491,6 +551,8 @@ def _build_chart_payload(
             "effective_start_date": effective_start_date.strftime("%Y-%m-%d"),
             "requested_end_date": requested_end_date.strftime("%Y-%m-%d"),
             "effective_end_date": effective_end_date.strftime("%Y-%m-%d"),
+            "portfolio_rebalance_period": portfolio_rebalance_period,
+            "benchmark_rebalance_period": benchmark_rebalance_period,
             "disable_live": True,
         },
         "portfolio": {
@@ -610,6 +672,8 @@ def create_model_portfolio_report(
     requested_end_date = _parse_date(body.get("endDate") or _today_date().strftime("%Y-%m-%d"), "End date")
     if requested_end_date < requested_start_date:
         raise ToolDataError("End date must be on or after the start date", 400)
+    portfolio_rebalance_period = _rebalance_period(body.get("portfolioRebalancePeriod"))
+    benchmark_rebalance_period = _rebalance_period(body.get("benchmarkRebalancePeriod"))
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
     portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
     benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
@@ -679,6 +743,7 @@ def create_model_portfolio_report(
         portfolio_holdings,
         asset_total_returns,
         effective_start_date,
+        rebalance_period=portfolio_rebalance_period,
     )
     if benchmark_config["mode"] == "ticker":
         benchmark_basket = _build_buy_and_hold_basket(
@@ -693,6 +758,7 @@ def create_model_portfolio_report(
             benchmark_config["holdings"],
             asset_total_returns,
             effective_start_date,
+            rebalance_period=benchmark_rebalance_period,
         )
 
     portfolio_returns = portfolio_basket["returns"]
@@ -707,12 +773,15 @@ def create_model_portfolio_report(
     weights_csv_path = tool_dir / f"weights_{file_slug}.csv"
     trades_csv_path = tool_dir / f"trades_{file_slug}.csv"
 
+    portfolio_series = add_missing_zeros(portfolio_returns).rename(report_name)
+    portfolio_series.index.name = None
     benchmark_series = add_missing_zeros(benchmark_returns).reindex(
-        add_missing_zeros(portfolio_returns).index,
+        portfolio_series.index,
         fill_value=0.0,
-    )
+    ).rename(benchmark_config["label"])
+    benchmark_series.index.name = None
     qs.reports.html(
-        add_missing_zeros(portfolio_returns),
+        portfolio_series,
         rf=0.0396,
         benchmark=benchmark_series,
         output=report_path,
@@ -734,6 +803,8 @@ def create_model_portfolio_report(
         effective_start_date,
         requested_end_date,
         effective_end_date,
+        portfolio_rebalance_period,
+        benchmark_rebalance_period,
     )
     interactive_json_path.write_text(json.dumps(chart_payload, indent=2), encoding="utf-8")
 
@@ -778,6 +849,8 @@ def create_model_portfolio_report(
         "account": viewer_account,
         "effectiveStartDate": effective_start_date.strftime("%Y-%m-%d"),
         "effectiveEndDate": effective_end_date.strftime("%Y-%m-%d"),
+        "portfolioRebalancePeriod": portfolio_rebalance_period,
+        "benchmarkRebalancePeriod": benchmark_rebalance_period,
         "rangeInfo": range_info,
         "warnings": warnings,
     }

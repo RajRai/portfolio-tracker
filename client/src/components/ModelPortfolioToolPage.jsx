@@ -41,6 +41,14 @@ const defaultEndDateString = () => rollWeekendBack(new Date()).toISOString().sli
 const scopeLabel = (scope) =>
     scope === "both" ? "Both" : scope === "benchmark" ? "Benchmark" : "Portfolio";
 
+const REBALANCE_PERIOD_OPTIONS = [
+    { value: "none", label: "No rebalancing" },
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "monthly", label: "Monthly" },
+    { value: "quarterly", label: "Quarterly" },
+];
+
 const formatWeightsText = (holdings) =>
     (holdings || [])
         .map((holding) => {
@@ -110,6 +118,9 @@ function WeightInputSection({
     showSourcePicker = true,
     useMarketCapWeights,
     onUseMarketCapWeightsChange,
+    rebalancePeriod = "none",
+    onRebalancePeriodChange = null,
+    rebalanceLabel = "Rebalance cadence",
 }) {
     return (
         <Box>
@@ -163,6 +174,26 @@ function WeightInputSection({
                 label="Market cap weight as of the start date when possible"
             />
 
+            {onRebalancePeriodChange ? (
+                <Box sx={{ mt: 1, maxWidth: 260 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                        {rebalanceLabel}
+                    </Typography>
+                    <Select
+                        fullWidth
+                        size="small"
+                        value={rebalancePeriod}
+                        onChange={(event) => onRebalancePeriodChange(event.target.value)}
+                    >
+                        {REBALANCE_PERIOD_OPTIONS.map((option) => (
+                            <MenuItem key={option.value} value={option.value}>
+                                {option.label}
+                            </MenuItem>
+                        ))}
+                    </Select>
+                </Box>
+            ) : null}
+
             {!!parsed.invalidLines.length && (
                 <Alert severity="warning" sx={{ mt: 1.5 }}>
                     Fix {parsed.invalidLines.length} invalid line{parsed.invalidLines.length === 1 ? "" : "s"} before generating the report.
@@ -215,6 +246,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const [benchmarkWeightsText, setBenchmarkWeightsText] = useState("");
     const [benchmarkTicker, setBenchmarkTicker] = useState("VT");
     const [benchmarkMode, setBenchmarkMode] = useState("ticker");
+    const [portfolioRebalancePeriod, setPortfolioRebalancePeriod] = useState("none");
+    const [benchmarkRebalancePeriod, setBenchmarkRebalancePeriod] = useState("none");
     const [portfolioUseMarketCapWeights, setPortfolioUseMarketCapWeights] = useState(false);
     const [benchmarkUseMarketCapWeights, setBenchmarkUseMarketCapWeights] = useState(false);
     const [portfolioSourceSummary, setPortfolioSourceSummary] = useState(null);
@@ -274,6 +307,50 @@ export default function ModelPortfolioToolPage({ accounts }) {
         );
     };
 
+    React.useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const sourceAccountId = params.get("sourceAccountId");
+        if (!sourceAccountId) return;
+
+        let cancelled = false;
+        const applyPrefill = async () => {
+            setPortfolioSourceAccountId(sourceAccountId);
+            setReportName(params.get("reportName")?.trim() || "Model Portfolio");
+            setBenchmarkMode("ticker");
+            setBenchmarkTicker(normalizeTicker(params.get("benchmarkTicker")) || "VT");
+            setBenchmarkWeightsText("");
+            setBenchmarkSourceSummary(null);
+            setBenchmarkUseMarketCapWeights(false);
+            setPortfolioUseMarketCapWeights(false);
+            setPortfolioRebalancePeriod("none");
+            setBenchmarkRebalancePeriod("none");
+            setWarnings([]);
+            setError("");
+            setViewerAccount(null);
+            setRangeInfo(null);
+            await loadSourceWeights(
+                sourceAccountId,
+                (value) => {
+                    if (!cancelled) setPortfolioWeightsText(value);
+                },
+                (value) => {
+                    if (!cancelled) setPortfolioSourceSummary(value);
+                },
+                (value) => {
+                    if (!cancelled) setLoadingPortfolioSource(value);
+                }
+            );
+            if (!cancelled) {
+                window.history.replaceState({}, "", window.location.pathname);
+            }
+        };
+
+        applyPrefill();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     const benchmarkNeedsWeights = benchmarkMode === "existingPortfolio" || benchmarkMode === "customPortfolio";
     const datesValid = !startDate || !endDate || startDate <= endDate;
     const canGenerate =
@@ -301,6 +378,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 reportName,
                 startDate,
                 endDate,
+                portfolioRebalancePeriod,
+                benchmarkRebalancePeriod,
                 weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
                 holdings: portfolioParsed.rows.map((row) => ({
                     ticker: row.ticker,
@@ -396,6 +475,9 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         parsed={portfolioParsed}
                         useMarketCapWeights={portfolioUseMarketCapWeights}
                         onUseMarketCapWeightsChange={setPortfolioUseMarketCapWeights}
+                        rebalancePeriod={portfolioRebalancePeriod}
+                        onRebalancePeriodChange={setPortfolioRebalancePeriod}
+                        rebalanceLabel="Strategy rebalance cadence"
                     />
 
                     <Divider />
@@ -445,6 +527,9 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                     showSourcePicker={benchmarkNeedsWeights && benchmarkMode === "existingPortfolio"}
                                     useMarketCapWeights={benchmarkUseMarketCapWeights}
                                     onUseMarketCapWeightsChange={setBenchmarkUseMarketCapWeights}
+                                    rebalancePeriod={benchmarkRebalancePeriod}
+                                    onRebalancePeriodChange={setBenchmarkRebalancePeriod}
+                                    rebalanceLabel="Benchmark rebalance cadence"
                                 />
                             )}
                         </Stack>

@@ -217,10 +217,25 @@ export default function App() {
 
     const navigateTo = (nextPage) => {
         const nextPath = TOOL_PATHS[nextPage] || TOOL_PATHS.home;
-        if (window.location.pathname !== nextPath) {
-            window.history.pushState({}, "", nextPath);
+        const nextUrl = nextPath;
+        if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+            window.history.pushState({}, "", nextUrl);
         }
         setPage(nextPage);
+    };
+
+    const openBacksimulatorForAccount = (account) => {
+        if (!account?.id) return;
+        const params = new URLSearchParams({
+            sourceAccountId: account.id,
+            benchmarkTicker: "VT",
+            reportName: account.name || account.id,
+        });
+        const nextUrl = `${TOOL_PATHS.modelPortfolio}?${params.toString()}`;
+        if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+            window.history.pushState({}, "", nextUrl);
+        }
+        setPage("modelPortfolio");
     };
 
     useEffect(() => {
@@ -592,7 +607,11 @@ export default function App() {
                 {page === "earnings" && <StockToolsPage tool="earnings" accounts={accounts} />}
                 {page === "modelPortfolio" && <ModelPortfolioToolPage accounts={accounts} />}
                 {page === "home" && accounts[active] && (
-                    <AccountTabs account={accounts[active]} liveStore={liveStore} />
+                    <AccountTabs
+                        account={accounts[active]}
+                        liveStore={liveStore}
+                        onOpenBacksimulator={() => openBacksimulatorForAccount(accounts[active])}
+                    />
                 )}
                 {page === "home" && !accounts.length && (
                     <Typography sx={{ m: 4 }}>No accounts found.</Typography>
