@@ -1,4 +1,5 @@
 import csv
+import json
 import math
 import os
 import re
@@ -90,15 +91,49 @@ def _read_csv_rows(path: Path) -> list[dict]:
         return list(csv.DictReader(handle))
 
 
-def portfolio_source(account_id: str, accounts: list[dict], out_dir: Path) -> dict:
-    account = next((item for item in accounts if item.get("id") == account_id), None)
-    if not account:
-        raise ToolDataError("Portfolio was not found", 404)
+def _read_json(path: Path) -> dict:
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
 
-    weights_path = out_dir / Path(account.get("weights", "")).name
-    if not weights_path.exists():
-        raise ToolDataError("Portfolio weights file was not found", 404)
 
+def _out_file_path(public_path: str | None, out_dir: Path) -> Path:
+    parts = [
+        part
+        for part in Path(str(public_path or "").lstrip("/")).parts
+        if part not in {"reports", "data"}
+    ]
+    return out_dir.joinpath(*parts) if parts else out_dir
+
+
+def _portfolio_interactive_path(account: dict, out_dir: Path) -> Path | None:
+    report_path = _out_file_path(account.get("report"), out_dir)
+    if report_path == out_dir:
+        return None
+    return report_path.with_name(f"{report_path.stem}_interactive.json")
+
+
+def _history_window_from_report_payload(payload: dict) -> dict | None:
+    meta = payload.get("meta") or {}
+    start_date = meta.get("effective_start_date") or meta.get("requested_start_date")
+    end_date = meta.get("effective_end_date") or meta.get("requested_end_date")
+
+    if not start_date or not end_date:
+        portfolio_daily = payload.get("portfolio", {}).get("daily") or []
+        dates = [str(point.get("t")) for point in portfolio_daily if point.get("t")]
+        if dates:
+            start_date = start_date or min(dates)
+            end_date = end_date or max(dates)
+
+    if not start_date or not end_date:
+        return None
+
+    return {
+        "startDate": str(start_date),
+        "endDate": str(end_date),
+    }
+
+
+def _portfolio_weight_holdings_from_csv(weights_path: Path) -> list[dict]:
     holdings = []
     for row in _read_csv_rows(weights_path):
         ticker = normalize_tickers(row.get("Ticker"))[:1]
@@ -112,14 +147,72 @@ def portfolio_source(account_id: str, accounts: list[dict], out_dir: Path) -> di
             "source_weight": (weight / 100.0) if weight is not None else None,
             "quantity": quantity,
         })
+    return holdings
+
+
+def _weight_history_from_report_payload(payload: dict) -> list[dict]:
+    weights_series = payload.get("weights") or []
+    history = []
+    seen = set()
+
+    for series in weights_series:
+        ticker = normalize_tickers(series.get("name"))[:1]
+        if not ticker or ticker[0] in seen:
+            continue
+        seen.add(ticker[0])
+
+        points = []
+        for point in series.get("points") or []:
+            point_date = str(point.get("t") or "")
+            if not point_date:
+                continue
+            weight = _to_float(point.get("v"))
+            points.append({
+                "date": point_date,
+                "weight": 0.0 if weight is None else weight,
+            })
+        if not points:
+            continue
+        history.append({
+            "ticker": ticker[0],
+            "points": points,
+        })
+
+    if not history:
+        raise ToolDataError("Historical weights could not be inferred for this portfolio", 404)
+    return history
+
+
+def portfolio_source(account_id: str, accounts: list[dict], out_dir: Path, infer_historical_weights: bool = False) -> dict:
+    account = next((item for item in accounts if item.get("id") == account_id), None)
+    if not account:
+        raise ToolDataError("Portfolio was not found", 404)
+
+    weights_path = _out_file_path(account.get("weights"), out_dir)
+    if not weights_path.exists():
+        raise ToolDataError("Portfolio weights file was not found", 404)
+
+    interactive_path = _portfolio_interactive_path(account, out_dir)
+    report_payload = _read_json(interactive_path) if interactive_path and interactive_path.exists() else None
+    history_window = _history_window_from_report_payload(report_payload or {}) if report_payload else None
+    holdings = _portfolio_weight_holdings_from_csv(weights_path)
+    weight_history = None
+
+    if infer_historical_weights:
+        if report_payload is None:
+            raise ToolDataError("Portfolio history file was not found", 404)
+        weight_history = _weight_history_from_report_payload(report_payload)
 
     return _dedupe_holdings({
         "source": {
             "type": "portfolio",
             "label": account.get("name") or account.get("id") or "Portfolio",
             "id": account.get("id"),
+            "weightSource": "historical" if infer_historical_weights else "current",
+            "historyWindow": history_window,
         },
         "holdings": holdings,
+        "weightHistory": weight_history,
         "warnings": [],
     })
 
@@ -146,7 +239,12 @@ def _dedupe_holdings(payload: dict) -> dict:
 def stock_source(body: dict, accounts: list[dict], out_dir: Path, api_key: str | None = None) -> dict:
     source_type = (body.get("sourceType") or "").strip().lower()
     if source_type == "portfolio":
-        return portfolio_source(body.get("accountId"), accounts, out_dir)
+        return portfolio_source(
+            body.get("accountId"),
+            accounts,
+            out_dir,
+            infer_historical_weights=bool(body.get("inferHistoricalWeights")),
+        )
     if source_type == "fund":
         raise ToolDataError("Index fund loading was removed. Add those stocks manually.", 400)
     raise ToolDataError("Choose a portfolio source or add stocks manually", 400)

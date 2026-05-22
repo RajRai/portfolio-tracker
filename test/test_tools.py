@@ -41,6 +41,77 @@ def test_portfolio_source_reads_weights_file(tmp_path):
     assert payload["holdings"][1]["quantity"] == pytest.approx(5.0)
 
 
+def test_portfolio_source_can_return_full_weight_history_and_history_window_from_report(tmp_path):
+    weights_path = tmp_path / "weights_0.csv"
+    interactive_path = tmp_path / "report_0_interactive.json"
+    with open(weights_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Ticker", "Portfolio Weight (%)", "_Quantity"])
+        writer.writeheader()
+        writer.writerow({"Ticker": "AAPL", "Portfolio Weight (%)": "55.00%", "_Quantity": "10"})
+        writer.writerow({"Ticker": "MSFT", "Portfolio Weight (%)": "45.00%", "_Quantity": "5"})
+    interactive_path.write_text(
+        """
+{
+  "portfolio": {
+    "daily": [
+      {"t": "2026-01-02", "v": 0.0},
+      {"t": "2026-01-05", "v": 0.01}
+    ]
+  },
+  "weights": [
+    {
+      "name": "AAPL",
+      "points": [
+        {"t": "2026-01-02", "v": 0.7},
+        {"t": "2026-01-05", "v": 0.55}
+      ]
+    },
+    {
+      "name": "MSFT",
+      "points": [
+        {"t": "2026-01-02", "v": 0.3},
+        {"t": "2026-01-05", "v": 0.45}
+      ]
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    payload = tools.portfolio_source(
+        "acct",
+        [{"id": "acct", "name": "Test Portfolio", "weights": "/data/weights_0.csv", "report": "/reports/report_0.html"}],
+        tmp_path,
+        infer_historical_weights=True,
+    )
+
+    assert payload["source"]["weightSource"] == "historical"
+    assert payload["source"]["historyWindow"] == {
+        "startDate": "2026-01-02",
+        "endDate": "2026-01-05",
+    }
+    assert payload["tickers"] == ["AAPL", "MSFT"]
+    assert payload["holdings"][0]["source_weight"] == pytest.approx(0.55)
+    assert payload["holdings"][1]["source_weight"] == pytest.approx(0.45)
+    assert payload["weightHistory"] == [
+        {
+            "ticker": "AAPL",
+            "points": [
+                {"date": "2026-01-02", "weight": pytest.approx(0.7)},
+                {"date": "2026-01-05", "weight": pytest.approx(0.55)},
+            ],
+        },
+        {
+            "ticker": "MSFT",
+            "points": [
+                {"date": "2026-01-02", "weight": pytest.approx(0.3)},
+                {"date": "2026-01-05", "weight": pytest.approx(0.45)},
+            ],
+        },
+    ]
+
+
 def test_stock_source_rejects_fund_source(tmp_path):
     with pytest.raises(tools.ToolDataError, match="Index fund loading was removed"):
         tools.stock_source({"sourceType": "fund", "fundTicker": "SPY"}, [], tmp_path, api_key="key")

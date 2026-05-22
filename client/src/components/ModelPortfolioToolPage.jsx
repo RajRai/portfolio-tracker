@@ -116,10 +116,16 @@ function WeightInputSection({
     onChange,
     parsed,
     showSourcePicker = true,
+    sourceControls = null,
+    disableWeightsInput = false,
+    weightsHelperText = "One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1.",
+    hideParsedTable = false,
     useMarketCapWeights,
     onUseMarketCapWeightsChange,
+    disableMarketCapWeights = false,
     rebalancePeriod = "none",
     onRebalancePeriodChange = null,
+    disableRebalancePeriod = false,
     rebalanceLabel = "Rebalance cadence",
 }) {
     return (
@@ -145,9 +151,13 @@ function WeightInputSection({
                 </Box>
             )}
 
+            {sourceControls}
+
             {sourceSummary && (
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                    Loaded weights from {sourceSummary.label}.
+                    {sourceSummary.weightSource === "historical"
+                        ? `Loaded full weight history from ${sourceSummary.label}.`
+                        : `Loaded current weights from ${sourceSummary.label}.`}
                 </Typography>
             )}
 
@@ -158,8 +168,9 @@ function WeightInputSection({
                 label={`${title} Weights`}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
+                disabled={disableWeightsInput}
                 placeholder={"AAPL\nMSFT 35\nNVDA 40"}
-                helperText="One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1."
+                helperText={weightsHelperText}
             />
 
             <FormControlLabel
@@ -168,6 +179,7 @@ function WeightInputSection({
                     <Checkbox
                         size="small"
                         checked={useMarketCapWeights}
+                        disabled={disableMarketCapWeights}
                         onChange={(event) => onUseMarketCapWeightsChange(event.target.checked)}
                     />
                 }
@@ -183,6 +195,7 @@ function WeightInputSection({
                         fullWidth
                         size="small"
                         value={rebalancePeriod}
+                        disabled={disableRebalancePeriod}
                         onChange={(event) => onRebalancePeriodChange(event.target.value)}
                     >
                         {REBALANCE_PERIOD_OPTIONS.map((option) => (
@@ -206,7 +219,7 @@ function WeightInputSection({
                 </Alert>
             )}
 
-            {parsed.rows.length > 0 && (
+            {!hideParsedTable && parsed.rows.length > 0 && (
                 <Box sx={{ mt: 1.5 }}>
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                         {parsed.rows.length} holding{parsed.rows.length === 1 ? "" : "s"} loaded.
@@ -248,6 +261,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const [benchmarkMode, setBenchmarkMode] = useState("ticker");
     const [portfolioRebalancePeriod, setPortfolioRebalancePeriod] = useState("none");
     const [benchmarkRebalancePeriod, setBenchmarkRebalancePeriod] = useState("none");
+    const [portfolioInferWeightsFromHistory, setPortfolioInferWeightsFromHistory] = useState(false);
+    const [portfolioWeightHistory, setPortfolioWeightHistory] = useState(null);
     const [portfolioUseMarketCapWeights, setPortfolioUseMarketCapWeights] = useState(false);
     const [benchmarkUseMarketCapWeights, setBenchmarkUseMarketCapWeights] = useState(false);
     const [portfolioSourceSummary, setPortfolioSourceSummary] = useState(null);
@@ -259,6 +274,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const [error, setError] = useState("");
     const [viewerAccount, setViewerAccount] = useState(null);
     const [rangeInfo, setRangeInfo] = useState(null);
+    const unlockedDateRangeRef = React.useRef(null);
 
     React.useEffect(() => {
         if (!portfolioSourceAccountId && accounts[0]?.id) {
@@ -272,30 +288,57 @@ export default function ModelPortfolioToolPage({ accounts }) {
     const portfolioParsed = useMemo(() => parseWeightText(portfolioWeightsText), [portfolioWeightsText]);
     const benchmarkParsed = useMemo(() => parseWeightText(benchmarkWeightsText), [benchmarkWeightsText]);
 
-    const loadSourceWeights = async (accountId, setter, summarySetter, loadingSetter) => {
+    const applyPortfolioHistoryWindow = (summary) => {
+        const historyWindow = summary?.historyWindow;
+        if (!historyWindow?.startDate || !historyWindow?.endDate) return;
+        setStartDate(historyWindow.startDate);
+        setEndDate(historyWindow.endDate);
+    };
+
+    const restoreUnlockedDateRange = () => {
+        if (!unlockedDateRangeRef.current) return;
+        setStartDate(unlockedDateRangeRef.current.startDate);
+        setEndDate(unlockedDateRangeRef.current.endDate);
+    };
+
+    const loadSourceWeights = async (accountId, setter, summarySetter, loadingSetter, options = {}) => {
         loadingSetter(true);
         setError("");
         try {
             const payload = await postJson("/api/tools/stock-source", {
                 sourceType: "portfolio",
                 accountId,
+                inferHistoricalWeights: Boolean(options.inferHistoricalWeights),
             });
             setter(formatWeightsText(payload.holdings || []));
             summarySetter(payload.source || null);
+            return payload;
         } catch (err) {
             setError(err.message);
+            return null;
         } finally {
             loadingSetter(false);
         }
     };
 
-    const loadPortfolioSource = async () => {
-        await loadSourceWeights(
+    const loadPortfolioSource = async (options = {}) => {
+        const inferHistoricalWeights = options.inferHistoricalWeights ?? portfolioInferWeightsFromHistory;
+        const payload = await loadSourceWeights(
             portfolioSourceAccountId,
             setPortfolioWeightsText,
             setPortfolioSourceSummary,
-            setLoadingPortfolioSource
+            setLoadingPortfolioSource,
+            { inferHistoricalWeights }
         );
+        setPortfolioWeightHistory(
+            inferHistoricalWeights && Array.isArray(payload?.weightHistory)
+                ? payload.weightHistory
+                : null
+        );
+        if (inferHistoricalWeights && payload?.source) {
+            applyPortfolioHistoryWindow(payload.source);
+        }
+        return payload;
     };
 
     const loadBenchmarkSource = async () => {
@@ -320,6 +363,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
             setBenchmarkTicker(normalizeTicker(params.get("benchmarkTicker")) || "VT");
             setBenchmarkWeightsText("");
             setBenchmarkSourceSummary(null);
+            setPortfolioInferWeightsFromHistory(false);
+            setPortfolioWeightHistory(null);
             setBenchmarkUseMarketCapWeights(false);
             setPortfolioUseMarketCapWeights(false);
             setPortfolioRebalancePeriod("none");
@@ -352,12 +397,23 @@ export default function ModelPortfolioToolPage({ accounts }) {
     }, []);
 
     const benchmarkNeedsWeights = benchmarkMode === "existingPortfolio" || benchmarkMode === "customPortfolio";
+    const portfolioHistoryWindow = portfolioSourceSummary?.historyWindow || null;
+    const portfolioDatesLocked = portfolioInferWeightsFromHistory && Boolean(portfolioHistoryWindow);
+    const portfolioSourceReadyForHistoricalInference =
+        !portfolioInferWeightsFromHistory || (
+            portfolioSourceSummary?.id === portfolioSourceAccountId &&
+            portfolioSourceSummary?.weightSource === "historical" &&
+            Boolean(portfolioHistoryWindow) &&
+            Array.isArray(portfolioWeightHistory) &&
+            portfolioWeightHistory.length > 0
+        );
     const datesValid = !startDate || !endDate || startDate <= endDate;
     const canGenerate =
         !!reportName.trim() &&
         !!startDate &&
         !!endDate &&
         datesValid &&
+        portfolioSourceReadyForHistoricalInference &&
         portfolioParsed.rows.length > 0 &&
         portfolioParsed.invalidLines.length === 0 &&
         (
@@ -365,6 +421,36 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 ? !!normalizeTicker(benchmarkTicker)
                 : benchmarkParsed.rows.length > 0 && benchmarkParsed.invalidLines.length === 0
         );
+
+    const portfolioDateHelperText = portfolioDatesLocked
+        ? `Locked to ${portfolioSourceSummary?.label || "the selected source portfolio"} history: ${portfolioHistoryWindow.startDate} through ${portfolioHistoryWindow.endDate}.`
+        : portfolioInferWeightsFromHistory
+            ? "Loading the selected source portfolio history will lock this date range."
+            : "Uses the next available trading day on or after this date.";
+    const portfolioEndDateHelperText = portfolioDatesLocked
+        ? `Locked to ${portfolioSourceSummary?.label || "the selected source portfolio"} history: ${portfolioHistoryWindow.startDate} through ${portfolioHistoryWindow.endDate}.`
+        : portfolioInferWeightsFromHistory
+            ? "Loading the selected source portfolio history will lock this date range."
+            : "Uses the last available trading day on or before this date.";
+
+    const handlePortfolioInferWeightsFromHistoryChange = async (checked) => {
+        if (checked === portfolioInferWeightsFromHistory) return;
+
+        if (checked) {
+            unlockedDateRangeRef.current = { startDate, endDate };
+        } else {
+            restoreUnlockedDateRange();
+            setPortfolioWeightHistory(null);
+        }
+
+        setPortfolioInferWeightsFromHistory(checked);
+        if (checked) {
+            setPortfolioUseMarketCapWeights(false);
+            setPortfolioRebalancePeriod("none");
+        }
+        if (!portfolioSourceAccountId) return;
+        await loadPortfolioSource({ inferHistoricalWeights: checked });
+    };
 
     const generateReport = async () => {
         setLoadingReport(true);
@@ -381,6 +467,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 portfolioRebalancePeriod,
                 benchmarkRebalancePeriod,
                 weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
+                portfolioWeightHistory: portfolioInferWeightsFromHistory ? portfolioWeightHistory : null,
+                portfolioHistoryWindow: portfolioInferWeightsFromHistory ? portfolioHistoryWindow : null,
                 holdings: portfolioParsed.rows.map((row) => ({
                     ticker: row.ticker,
                     weight: row.weight,
@@ -439,9 +527,10 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             label="Start Date"
                             value={startDate}
                             onChange={(event) => setStartDate(event.target.value)}
+                            disabled={portfolioDatesLocked}
                             InputLabelProps={{ shrink: true }}
                             sx={{ minWidth: { md: 220 } }}
-                            helperText="Uses the next available trading day on or after this date."
+                            helperText={portfolioDateHelperText}
                         />
                         <TextField
                             size="small"
@@ -449,9 +538,10 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             label="End Date"
                             value={endDate}
                             onChange={(event) => setEndDate(event.target.value)}
+                            disabled={portfolioDatesLocked}
                             InputLabelProps={{ shrink: true }}
                             sx={{ minWidth: { md: 220 } }}
-                            helperText="Uses the last available trading day on or before this date."
+                            helperText={portfolioEndDateHelperText}
                         />
                     </Stack>
 
@@ -473,10 +563,40 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         value={portfolioWeightsText}
                         onChange={setPortfolioWeightsText}
                         parsed={portfolioParsed}
+                        sourceControls={(
+                            <Box sx={{ mb: 1.5 }}>
+                                <FormControlLabel
+                                    control={
+                                        <Checkbox
+                                            size="small"
+                                            checked={portfolioInferWeightsFromHistory}
+                                            onChange={(event) => {
+                                                handlePortfolioInferWeightsFromHistoryChange(event.target.checked);
+                                            }}
+                                        />
+                                    }
+                                    label="Use full weight history"
+                                />
+                                {portfolioInferWeightsFromHistory && (
+                                    <Alert severity="info" sx={{ mt: 1 }}>
+                                        The backsim uses the selected portfolio's full historical weights over time and locks the date range to that account's report window.
+                                    </Alert>
+                                )}
+                            </Box>
+                        )}
+                        disableWeightsInput={portfolioInferWeightsFromHistory}
+                        hideParsedTable={portfolioInferWeightsFromHistory}
+                        weightsHelperText={
+                            portfolioInferWeightsFromHistory
+                                ? "Using the selected portfolio's full historical weights over time."
+                                : "One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1."
+                        }
                         useMarketCapWeights={portfolioUseMarketCapWeights}
                         onUseMarketCapWeightsChange={setPortfolioUseMarketCapWeights}
+                        disableMarketCapWeights={portfolioInferWeightsFromHistory}
                         rebalancePeriod={portfolioRebalancePeriod}
                         onRebalancePeriodChange={setPortfolioRebalancePeriod}
+                        disableRebalancePeriod={portfolioInferWeightsFromHistory}
                         rebalanceLabel="Strategy rebalance cadence"
                     />
 

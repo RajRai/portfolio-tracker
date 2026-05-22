@@ -552,3 +552,70 @@ def test_create_model_portfolio_report_reports_symbols_that_limit_the_common_win
             },
         ],
     }
+
+
+def test_create_model_portfolio_report_can_follow_full_historical_weight_path(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 20.0, 20.0],
+            "BBB": [10.0, 10.0, 20.0],
+            "VT": [100.0, 100.0, 100.0],
+        },
+        index=pd.to_datetime(["2026-03-03", "2026-03-04", "2026-03-05"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Historical Weight Path",
+            "startDate": "2026-01-01",
+            "endDate": "2026-12-31",
+            "portfolioHistoryWindow": {
+                "startDate": "2026-03-03",
+                "endDate": "2026-03-05",
+            },
+            "portfolioWeightHistory": [
+                {
+                    "ticker": "AAA",
+                    "points": [
+                        {"date": "2026-03-03", "weight": 1.0},
+                        {"date": "2026-03-04", "weight": 0.0},
+                        {"date": "2026-03-05", "weight": 0.0},
+                    ],
+                },
+                {
+                    "ticker": "BBB",
+                    "points": [
+                        {"date": "2026-03-03", "weight": 0.0},
+                        {"date": "2026-03-04", "weight": 1.0},
+                        {"date": "2026-03-05", "weight": 1.0},
+                    ],
+                },
+            ],
+            "holdings": [
+                {"ticker": "AAA", "weight": 50},
+                {"ticker": "BBB", "weight": 50},
+            ],
+            "benchmark": {
+                "mode": "ticker",
+                "ticker": "VT",
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    interactive_path = next((tmp_path / "tool-model-portfolios").glob("report_*_interactive.json"))
+    interactive_payload = json.loads(interactive_path.read_text(encoding="utf-8"))
+    trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
+    trades = pd.read_csv(trades_path)
+
+    assert payload["effectiveStartDate"] == "2026-03-03"
+    assert payload["effectiveEndDate"] == "2026-03-05"
+    assert payload["warnings"] == []
+    assert [point["v"] for point in interactive_payload["portfolio"]["daily"]] == pytest.approx([0.0, 1.0, 1.0])
+    assert interactive_payload["weights"][0]["name"] == "AAA"
+    assert interactive_payload["weights"][1]["name"] == "BBB"
+    assert trades["Trade Size (% of Account)"].tolist() == ["100.00%", "100.00%", "100.00%"]

@@ -46,6 +46,20 @@ def _parse_date(value: str | None, label: str) -> pd.Timestamp:
     return parsed
 
 
+def _parse_history_window(value: dict | None) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    if not isinstance(value, dict):
+        return None
+    start_date = value.get("startDate")
+    end_date = value.get("endDate")
+    if not start_date or not end_date:
+        return None
+    parsed_start = _parse_date(start_date, "Start date")
+    parsed_end = _parse_date(end_date, "End date")
+    if parsed_end < parsed_start:
+        raise ToolDataError("End date must be on or after the start date", 400)
+    return parsed_start, parsed_end
+
+
 def _today_date() -> pd.Timestamp:
     return pd.Timestamp(datetime.now().date()).normalize()
 
@@ -99,6 +113,43 @@ def _rebalance_period(value, fallback: str = "none") -> str:
     if mode in {"none", "daily", "weekly", "monthly", "quarterly"}:
         return mode
     return fallback
+
+
+def _weight_history_frame(value) -> pd.DataFrame | None:
+    if not isinstance(value, list):
+        return None
+
+    series_by_symbol = {}
+    for row in value:
+        ticker = normalize_tickers((row or {}).get("ticker") or (row or {}).get("name"))[:1]
+        if not ticker:
+            continue
+
+        points = {}
+        for point in (row or {}).get("points") or []:
+            date_value = point.get("date") or point.get("t")
+            if not date_value:
+                continue
+            try:
+                point_date = pd.Timestamp(date_value).normalize()
+            except Exception:
+                continue
+
+            weight = _to_float(point.get("weight") if "weight" in point else point.get("v"))
+            points[point_date] = 0.0 if weight is None else max(weight, 0.0)
+
+        if points:
+            series_by_symbol[ticker[0]] = pd.Series(points, dtype=float)
+
+    if not series_by_symbol:
+        return None
+
+    history = pd.DataFrame(series_by_symbol).sort_index().fillna(0.0)
+    history.index = pd.to_datetime(history.index).normalize()
+    history = history[~history.index.duplicated(keep="last")]
+    row_totals = history.sum(axis=1)
+    history = history.div(row_totals.replace(0, pd.NA), axis=0).fillna(0.0)
+    return history
 
 
 def _parse_benchmark_config(benchmark: dict) -> dict:
@@ -473,6 +524,60 @@ def _build_buy_and_hold_basket(
         "weights_df": weights_df,
         "returns": returns,
         "basis": basis,
+        "strategy_mode": "static",
+    }
+
+
+def _build_weight_history_basket(
+    prices: pd.DataFrame,
+    asset_total_returns: pd.DataFrame,
+    weight_history: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> dict:
+    symbols = list(weight_history.columns)
+    basket_prices = prices.reindex(columns=symbols)
+    basket_prices = basket_prices[(basket_prices.index >= start_date) & (basket_prices.index <= end_date)].copy().ffill()
+    if basket_prices.empty:
+        raise ToolDataError("No price history was found after the effective start date", 400)
+
+    target_weights = (
+        weight_history.reindex(columns=symbols, fill_value=0.0)
+        .reindex(basket_prices.index)
+        .ffill()
+        .fillna(0.0)
+    )
+    row_totals = target_weights.sum(axis=1)
+    target_weights = target_weights.div(row_totals.replace(0, pd.NA), axis=0).fillna(0.0)
+
+    basket_asset_returns = (
+        asset_total_returns
+        .reindex(index=basket_prices.index, columns=symbols)
+        .fillna(0.0)
+        .astype(float)
+    )
+    if len(basket_asset_returns.index):
+        basket_asset_returns.iloc[0] = 0.0
+
+    returns = (target_weights.shift(1).fillna(0.0) * basket_asset_returns).sum(axis=1).fillna(0.0)
+    if len(returns.index):
+        returns.iloc[0] = 0.0
+
+    equity = (1.0 + returns).cumprod()
+    value_df = target_weights.mul(equity, axis=0)
+    entry_prices = basket_prices.loc[basket_prices.index[0], symbols].astype(float)
+    basis = pd.Series(float("nan"), index=symbols, dtype=float)
+
+    return {
+        "symbols": symbols,
+        "prices": basket_prices,
+        "entry_prices": entry_prices,
+        "asset_returns": basket_asset_returns,
+        "value_df": value_df,
+        "weights_df": target_weights,
+        "returns": returns,
+        "basis": basis,
+        "strategy_mode": "historical_weight_history",
     }
 
 
@@ -605,6 +710,25 @@ def _current_weights_frame(basket: dict) -> pd.DataFrame:
 
 
 def _trade_history_frame(basket: dict, start_date: pd.Timestamp, holdings: list[dict]) -> pd.DataFrame:
+    if basket.get("strategy_mode") == "historical_weight_history":
+        rows = []
+        previous_weights = pd.Series(0.0, index=basket["weights_df"].columns, dtype=float)
+        for date, weights in basket["weights_df"].iterrows():
+            deltas = weights.fillna(0.0) - previous_weights.reindex(weights.index).fillna(0.0)
+            changed = deltas[deltas.abs() > SHARE_EPSILON]
+            for ticker, delta in changed.items():
+                rows.append(
+                    {
+                        "Date": date.strftime("%Y-%m-%d"),
+                        "Ticker": ticker,
+                        "Action": "BUY" if delta > 0 else "SELL",
+                        "Trade Price ($)": float(basket["prices"].at[date, ticker]),
+                        "Trade Size (% of Account)": f"{abs(float(delta)) * 100:.2f}%",
+                    }
+                )
+            previous_weights = weights.fillna(0.0)
+        return pd.DataFrame(rows)
+
     rows = []
     for holding in holdings:
         ticker = holding["ticker"]
@@ -620,7 +744,12 @@ def _trade_history_frame(basket: dict, start_date: pd.Timestamp, holdings: list[
     return pd.DataFrame(rows)
 
 
-def _append_tables_to_report(report_path: Path, weights_df: pd.DataFrame, trades_df: pd.DataFrame):
+def _append_tables_to_report(
+    report_path: Path,
+    weights_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    trade_history_description: str = "Synthetic opening buys used to seed the model portfolio.",
+):
     display_weights = weights_df[[column for column in weights_df.columns if not column.startswith("_")]]
     with open(report_path, "a", encoding="utf-8") as handle:
         handle.write(
@@ -636,7 +765,7 @@ def _append_tables_to_report(report_path: Path, weights_df: pd.DataFrame, trades
               {weights_table}
 
               <h2 style="text-align:center; margin-top:50px;">Trade History (as % of Account Value)</h2>
-              <p style="text-align:center;">Synthetic opening buys used to seed the model portfolio.</p>
+              <p style="text-align:center;">{trade_history_description}</p>
               {trades_table}
             </div>
             """.format(
@@ -647,6 +776,7 @@ def _append_tables_to_report(report_path: Path, weights_df: pd.DataFrame, trades
                     classes="dataframe",
                     float_format="%.2f",
                 ),
+                trade_history_description=trade_history_description,
                 trades_table=trades_df.to_html(
                     index=False,
                     justify="center",
@@ -670,6 +800,10 @@ def create_model_portfolio_report(
     report_name = str(body.get("reportName") or "Model Portfolio").strip() or "Model Portfolio"
     requested_start_date = _parse_date(body.get("startDate"), "Start date")
     requested_end_date = _parse_date(body.get("endDate") or _today_date().strftime("%Y-%m-%d"), "End date")
+    portfolio_history_window = _parse_history_window(body.get("portfolioHistoryWindow"))
+    portfolio_weight_history = _weight_history_frame(body.get("portfolioWeightHistory"))
+    if portfolio_weight_history is not None and portfolio_history_window is not None:
+        requested_start_date, requested_end_date = portfolio_history_window
     if requested_end_date < requested_start_date:
         raise ToolDataError("End date must be on or after the start date", 400)
     portfolio_rebalance_period = _rebalance_period(body.get("portfolioRebalancePeriod"))
@@ -677,10 +811,15 @@ def create_model_portfolio_report(
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
     portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
     benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
+    portfolio_symbols = (
+        list(portfolio_weight_history.columns)
+        if portfolio_weight_history is not None
+        else [holding["ticker"] for holding in portfolio_holdings]
+    )
 
     symbols = list(
         dict.fromkeys(
-            [holding["ticker"] for holding in portfolio_holdings] + benchmark_config["symbols"]
+            portfolio_symbols + benchmark_config["symbols"]
         )
     )
     prices = _price_matrix(symbols, requested_start_date, requested_end_date)
@@ -694,7 +833,7 @@ def create_model_portfolio_report(
     ].copy().ffill()
     weighting_warnings = []
     needs_market_cap_weighting = (
-        portfolio_weighting_mode == "market_cap_start"
+        portfolio_weight_history is None and portfolio_weighting_mode == "market_cap_start"
         or (
             benchmark_config["mode"] == "portfolio"
             and benchmark_config.get("weighting_mode") == "market_cap_start"
@@ -738,13 +877,22 @@ def create_model_portfolio_report(
     )
     asset_total_returns = compute_total_return_returns(working_prices, dividends)
 
-    portfolio_basket = _build_buy_and_hold_basket(
-        working_prices,
-        portfolio_holdings,
-        asset_total_returns,
-        effective_start_date,
-        rebalance_period=portfolio_rebalance_period,
-    )
+    if portfolio_weight_history is not None:
+        portfolio_basket = _build_weight_history_basket(
+            working_prices,
+            asset_total_returns,
+            portfolio_weight_history,
+            effective_start_date,
+            effective_end_date,
+        )
+    else:
+        portfolio_basket = _build_buy_and_hold_basket(
+            working_prices,
+            portfolio_holdings,
+            asset_total_returns,
+            effective_start_date,
+            rebalance_period=portfolio_rebalance_period,
+        )
     if benchmark_config["mode"] == "ticker":
         benchmark_basket = _build_buy_and_hold_basket(
             working_prices,
@@ -792,7 +940,16 @@ def create_model_portfolio_report(
     trades_df = _trade_history_frame(portfolio_basket, effective_start_date, portfolio_holdings)
     current_weights_df.to_csv(weights_csv_path, index=False)
     trades_df.to_csv(trades_csv_path, index=False)
-    _append_tables_to_report(report_path, current_weights_df, trades_df)
+    _append_tables_to_report(
+        report_path,
+        current_weights_df,
+        trades_df,
+        trade_history_description=(
+            "Target weight changes inferred from the source portfolio history."
+            if portfolio_basket.get("strategy_mode") == "historical_weight_history"
+            else "Synthetic opening buys used to seed the model portfolio."
+        ),
+    )
 
     chart_payload = _build_chart_payload(
         portfolio_returns,
@@ -837,7 +994,7 @@ def create_model_portfolio_report(
     warnings.extend(weighting_warnings)
     range_info = _symbol_range_rows(
         prices,
-        [holding["ticker"] for holding in portfolio_holdings],
+        portfolio_symbols,
         benchmark_config["symbols"],
         effective_start_date,
         effective_end_date,
