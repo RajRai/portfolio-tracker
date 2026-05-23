@@ -45,7 +45,7 @@ const TOOL_TITLE = "Portfolio Backsimulator";
 const DEFAULT_REPORT_NAME = "Portfolio Backsimulation";
 const MANUAL_WEIGHTS_HELPER_TEXT =
     "One holding per line. Examples: AAPL, AAPL 25, or MSFT 12.5. If you leave the number off, it defaults to 1.";
-const DATE_LOCK_PENDING_TEXT = "Loading saved portfolio history will set this date range automatically.";
+const DATE_LOCK_PENDING_TEXT = "Loading saved portfolio history will set the allowed date range.";
 
 const REBALANCE_PERIOD_OPTIONS = [
     { value: "none", label: "No rebalancing" },
@@ -360,6 +360,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
         const params = new URLSearchParams(window.location.search);
         const sourceAccountId = params.get("sourceAccountId");
         if (!sourceAccountId) return;
+        const shouldUseHistoricalWeights = params.get("useHistoricalWeights") === "1";
 
         let cancelled = false;
         const applyPrefill = async () => {
@@ -369,7 +370,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             setBenchmarkTicker(normalizeTicker(params.get("benchmarkTicker")) || "VT");
             setBenchmarkWeightsText("");
             setBenchmarkSourceSummary(null);
-            setPortfolioInferWeightsFromHistory(false);
+            setPortfolioInferWeightsFromHistory(shouldUseHistoricalWeights);
             setPortfolioWeightHistory(null);
             setBenchmarkInferWeightsFromHistory(false);
             setBenchmarkWeightHistory(null);
@@ -381,7 +382,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             setError("");
             setViewerAccount(null);
             setRangeInfo(null);
-            await loadSourceWeights(
+            const payload = await loadSourceWeights(
                 sourceAccountId,
                 (value) => {
                     if (!cancelled) setPortfolioWeightsText(value);
@@ -391,8 +392,16 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 },
                 (value) => {
                     if (!cancelled) setLoadingPortfolioSource(value);
-                }
+                },
+                { inferHistoricalWeights: shouldUseHistoricalWeights }
             );
+            if (!cancelled) {
+                setPortfolioWeightHistory(
+                    shouldUseHistoricalWeights && Array.isArray(payload?.weightHistory)
+                        ? payload.weightHistory
+                        : null
+                );
+            }
             if (!cancelled) {
                 window.history.replaceState({}, "", window.location.pathname);
             }
@@ -461,11 +470,17 @@ export default function ModelPortfolioToolPage({ accounts }) {
         (benchmarkHistoryActive && !benchmarkSourceReadyForHistoricalInference);
     const historyWindowConflict = anyHistoryActive && lockedDateWindow && !lockedDateWindow.valid;
     const datesValid = !startDate || !endDate || startDate <= endDate;
+    const datesWithinLockedWindow =
+        !lockedDateWindow?.valid ||
+        !startDate ||
+        !endDate ||
+        (startDate >= lockedDateWindow.startDate && endDate <= lockedDateWindow.endDate);
     const canGenerate =
         !!reportName.trim() &&
         !!startDate &&
         !!endDate &&
         datesValid &&
+        datesWithinLockedWindow &&
         portfolioSourceReadyForHistoricalInference &&
         benchmarkSourceReadyForHistoricalInference &&
         !historyWindowConflict &&
@@ -481,7 +496,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
         historyWindowConflict
             ? "These saved portfolios do not overlap in time."
             : lockedDateWindow?.valid
-                ? `Using ${lockedDateWindow.label}: ${lockedDateWindow.startDate} through ${lockedDateWindow.endDate}.`
+                ? `Choose any range within ${lockedDateWindow.label}: ${lockedDateWindow.startDate} through ${lockedDateWindow.endDate}.`
                 : historyWindowPending
                     ? DATE_LOCK_PENDING_TEXT
                     : null;
@@ -496,9 +511,38 @@ export default function ModelPortfolioToolPage({ accounts }) {
 
     React.useEffect(() => {
         if (!anyHistoryActive || !lockedDateWindow?.valid) return;
-        setStartDate(lockedDateWindow.startDate);
-        setEndDate(lockedDateWindow.endDate);
-    }, [anyHistoryActive, lockedDateWindow?.endDate, lockedDateWindow?.startDate, lockedDateWindow?.valid]);
+
+        const clampedStartDate = !startDate
+            ? lockedDateWindow.startDate
+            : (startDate < lockedDateWindow.startDate
+                ? lockedDateWindow.startDate
+                : (startDate > lockedDateWindow.endDate ? lockedDateWindow.endDate : startDate));
+        const clampedEndDate = !endDate
+            ? lockedDateWindow.endDate
+            : (endDate > lockedDateWindow.endDate
+                ? lockedDateWindow.endDate
+                : (endDate < lockedDateWindow.startDate ? lockedDateWindow.startDate : endDate));
+
+        if (clampedStartDate > clampedEndDate) {
+            setStartDate(lockedDateWindow.startDate);
+            setEndDate(lockedDateWindow.endDate);
+            return;
+        }
+
+        if (clampedStartDate !== startDate) {
+            setStartDate(clampedStartDate);
+        }
+        if (clampedEndDate !== endDate) {
+            setEndDate(clampedEndDate);
+        }
+    }, [
+        anyHistoryActive,
+        endDate,
+        lockedDateWindow?.endDate,
+        lockedDateWindow?.startDate,
+        lockedDateWindow?.valid,
+        startDate,
+    ]);
 
     const handlePortfolioInferWeightsFromHistoryChange = async (checked) => {
         if (checked === portfolioInferWeightsFromHistory) return;
@@ -623,8 +667,11 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             label="Start Date"
                             value={startDate}
                             onChange={(event) => setStartDate(event.target.value)}
-                            disabled={anyHistoryActive}
                             InputLabelProps={{ shrink: true }}
+                            inputProps={{
+                                min: lockedDateWindow?.valid ? lockedDateWindow.startDate : undefined,
+                                max: lockedDateWindow?.valid ? lockedDateWindow.endDate : undefined,
+                            }}
                             sx={{ minWidth: { md: 220 } }}
                             helperText={portfolioDateHelperText}
                         />
@@ -634,8 +681,11 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             label="End Date"
                             value={endDate}
                             onChange={(event) => setEndDate(event.target.value)}
-                            disabled={anyHistoryActive}
                             InputLabelProps={{ shrink: true }}
+                            inputProps={{
+                                min: lockedDateWindow?.valid ? lockedDateWindow.startDate : undefined,
+                                max: lockedDateWindow?.valid ? lockedDateWindow.endDate : undefined,
+                            }}
                             sx={{ minWidth: { md: 220 } }}
                             helperText={portfolioEndDateHelperText}
                         />
@@ -644,6 +694,12 @@ export default function ModelPortfolioToolPage({ accounts }) {
                     {!datesValid && (
                         <Alert severity="warning">
                             End date must be on or after the start date.
+                        </Alert>
+                    )}
+
+                    {datesValid && !datesWithinLockedWindow && lockedDateWindow?.valid && (
+                        <Alert severity="warning">
+                            The selected dates must stay within the available source history window: {lockedDateWindow.startDate} through {lockedDateWindow.endDate}.
                         </Alert>
                     )}
 
@@ -681,7 +737,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                 />
                                 {portfolioInferWeightsFromHistory && (
                                     <Alert severity="info" sx={{ mt: 1 }}>
-                                        This backsimulation follows the selected portfolio's historical weights over time and locks the date range to that portfolio's history.
+                                        This backsimulation follows the selected portfolio's historical weights over time and limits the allowed date range to that portfolio's history.
                                     </Alert>
                                 )}
                             </Box>
@@ -773,7 +829,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                             />
                                             {benchmarkHistoryActive && (
                                                 <Alert severity="info" sx={{ mt: 1 }}>
-                                                    This benchmark follows the selected portfolio's historical weights over time and shares the date range with any other history-based source.
+                                                    This benchmark follows the selected portfolio's historical weights over time and limits the allowed date range to the shared source history.
                                                 </Alert>
                                             )}
                                         </Box>

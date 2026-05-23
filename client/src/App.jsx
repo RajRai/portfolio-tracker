@@ -230,6 +230,7 @@ export default function App() {
             sourceAccountId: account.id,
             benchmarkTicker: "VT",
             reportName: account.name || account.id,
+            useHistoricalWeights: "1",
         });
         const nextUrl = `${TOOL_PATHS.modelPortfolio}?${params.toString()}`;
         if (`${window.location.pathname}${window.location.search}` !== nextUrl) {

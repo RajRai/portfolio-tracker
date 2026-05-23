@@ -833,7 +833,12 @@ def create_model_portfolio_report(
         benchmark_config.get("history_window") if benchmark_config.get("weight_history") is not None else None,
     ])
     if common_history_window is not None:
-        requested_start_date, requested_end_date = common_history_window
+        common_start_date, common_end_date = common_history_window
+        if requested_start_date < common_start_date or requested_end_date > common_end_date:
+            raise ToolDataError(
+                "Selected date range must stay within the common source portfolio history window",
+                400,
+            )
     if requested_end_date < requested_start_date:
         raise ToolDataError("End date must be on or after the start date", 400)
     portfolio_rebalance_period = _rebalance_period(body.get("portfolioRebalancePeriod"))

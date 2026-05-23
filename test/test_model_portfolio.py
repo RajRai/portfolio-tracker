@@ -621,7 +621,7 @@ def test_create_model_portfolio_report_can_follow_full_historical_weight_path(mo
     assert trades["Trade Size (% of Account)"].tolist() == ["100.00%", "100.00%", "100.00%"]
 
 
-def test_create_model_portfolio_report_uses_common_history_window_for_strategy_and_benchmark_sources(monkeypatch, tmp_path):
+def test_create_model_portfolio_report_allows_subsetting_within_common_history_window_for_strategy_and_benchmark_sources(monkeypatch, tmp_path):
     prices = pd.DataFrame(
         {
             "AAA": [10.0, 11.0, 12.0, 13.0],
@@ -638,8 +638,8 @@ def test_create_model_portfolio_report_uses_common_history_window_for_strategy_a
     payload = model_portfolio.create_model_portfolio_report(
         {
             "reportName": "Common History Window",
-            "startDate": "2026-01-01",
-            "endDate": "2026-12-31",
+            "startDate": "2026-03-04",
+            "endDate": "2026-03-05",
             "portfolioHistoryWindow": {
                 "startDate": "2026-03-03",
                 "endDate": "2026-03-05",
@@ -700,3 +700,75 @@ def test_create_model_portfolio_report_uses_common_history_window_for_strategy_a
     assert payload["rangeInfo"]["requestedStartDate"] == "2026-03-04"
     assert payload["rangeInfo"]["requestedEndDate"] == "2026-03-05"
     assert [point["t"] for point in interactive_payload["benchmark"]["daily"]] == ["2026-03-04", "2026-03-05"]
+
+
+def test_create_model_portfolio_report_rejects_dates_outside_common_history_window(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 11.0, 12.0, 13.0],
+            "BBB": [10.0, 10.0, 11.0, 11.0],
+            "CCC": [100.0, 101.0, 102.0, 103.0],
+        },
+        index=pd.to_datetime(["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+
+    with pytest.raises(ToolDataError, match="common source portfolio history window"):
+        model_portfolio.create_model_portfolio_report(
+            {
+                "reportName": "Out Of Bounds History Window",
+                "startDate": "2026-03-03",
+                "endDate": "2026-03-06",
+                "portfolioHistoryWindow": {
+                    "startDate": "2026-03-03",
+                    "endDate": "2026-03-05",
+                },
+                "portfolioWeightHistory": [
+                    {
+                        "ticker": "AAA",
+                        "points": [
+                            {"date": "2026-03-03", "weight": 1.0},
+                            {"date": "2026-03-04", "weight": 0.5},
+                            {"date": "2026-03-05", "weight": 0.5},
+                        ],
+                    },
+                    {
+                        "ticker": "BBB",
+                        "points": [
+                            {"date": "2026-03-03", "weight": 0.0},
+                            {"date": "2026-03-04", "weight": 0.5},
+                            {"date": "2026-03-05", "weight": 0.5},
+                        ],
+                    },
+                ],
+                "holdings": [
+                    {"ticker": "AAA", "weight": 50},
+                    {"ticker": "BBB", "weight": 50},
+                ],
+                "benchmark": {
+                    "mode": "portfolio",
+                    "label": "Historical Benchmark",
+                    "historyWindow": {
+                        "startDate": "2026-03-04",
+                        "endDate": "2026-03-06",
+                    },
+                    "weightHistory": [
+                        {
+                            "ticker": "CCC",
+                            "points": [
+                                {"date": "2026-03-04", "weight": 1.0},
+                                {"date": "2026-03-05", "weight": 1.0},
+                                {"date": "2026-03-06", "weight": 1.0},
+                            ],
+                        },
+                    ],
+                    "holdings": [
+                        {"ticker": "CCC", "weight": 100},
+                    ],
+                },
+            },
+            out_dir=tmp_path,
+        )
