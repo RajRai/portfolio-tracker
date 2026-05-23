@@ -364,3 +364,41 @@ def test_compute_total_return_returns_adds_dividend_yield_to_price_return():
     assert returns.loc[pd.Timestamp("2026-01-01"), "AAA"] == pytest.approx(0.0)
     assert returns.loc[pd.Timestamp("2026-01-02"), "AAA"] == pytest.approx(0.01)
     assert returns.loc[pd.Timestamp("2026-01-03"), "AAA"] == pytest.approx(101.0 / 99.0 - 1.0)
+
+
+def test_get_polygon_prices_stitches_fb_history_into_meta(monkeypatch):
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setenv("POLYGON_MOCK_NOW", "2022-06-10 10:00:00")
+
+    def fake_yfinance_series(symbol, start, end, today_date):
+        return pd.Series(dtype=float)
+
+    def fake_polygon_series(symbol, start, fetch_end, api_key, today_date):
+        if symbol == "FB":
+            return pd.Series(
+                [100.0, 110.0],
+                index=pd.to_datetime(["2022-06-07", "2022-06-08"]),
+                dtype=float,
+            )
+        if symbol == "META":
+            return pd.Series(
+                [184.0, 175.57],
+                index=pd.to_datetime(["2022-06-09", "2022-06-10"]),
+                dtype=float,
+            )
+        return pd.Series(dtype=float)
+
+    monkeypatch.setattr(pf, "_fetch_yfinance_daily_series", fake_yfinance_series)
+    monkeypatch.setattr(pf, "_fetch_polygon_daily_series", fake_polygon_series)
+    monkeypatch.setattr(
+        pf,
+        "_fetch_intraday_summary",
+        lambda symbol, today_str, api_key: {"current": None, "open": None},
+    )
+
+    prices = pf.get_polygon_prices(["META"], "2022-06-07", "2022-06-10")
+
+    assert list(prices.index) == list(
+        pd.to_datetime(["2022-06-07", "2022-06-08", "2022-06-09", "2022-06-10"])
+    )
+    assert list(map(float, prices["META"].values)) == [100.0, 110.0, 184.0, 175.57]

@@ -571,8 +571,8 @@ def test_create_model_portfolio_report_can_follow_full_historical_weight_path(mo
     payload = model_portfolio.create_model_portfolio_report(
         {
             "reportName": "Historical Weight Path",
-            "startDate": "2026-01-01",
-            "endDate": "2026-12-31",
+            "startDate": "2026-03-03",
+            "endDate": "2026-03-05",
             "portfolioHistoryWindow": {
                 "startDate": "2026-03-03",
                 "endDate": "2026-03-05",
@@ -615,6 +615,8 @@ def test_create_model_portfolio_report_can_follow_full_historical_weight_path(mo
     assert payload["effectiveStartDate"] == "2026-03-03"
     assert payload["effectiveEndDate"] == "2026-03-05"
     assert payload["warnings"] == []
+    assert payload["rangeInfo"]["requestedStartDate"] == "2026-03-03"
+    assert payload["rangeInfo"]["requestedEndDate"] == "2026-03-05"
     assert [point["v"] for point in interactive_payload["portfolio"]["daily"]] == pytest.approx([0.0, 1.0, 1.0])
     assert interactive_payload["weights"][0]["name"] == "AAA"
     assert interactive_payload["weights"][1]["name"] == "BBB"

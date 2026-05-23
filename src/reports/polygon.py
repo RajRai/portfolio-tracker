@@ -18,6 +18,13 @@ REFERENCE_CACHE_DIR = BASE_CACHE_DIR / "polygon-reference"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 REFERENCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+HISTORICAL_TICKER_SEGMENTS = {
+    "META": [
+        {"symbol": "FB", "end": "2022-06-08"},
+        {"symbol": "META", "start": "2022-06-09"},
+    ],
+}
+
 
 def _now_et():
     mock = os.getenv("POLYGON_MOCK_NOW")
@@ -69,6 +76,32 @@ def _save_yfinance_cache(symbol, start, end, data):
 
 def _reference_cache_path(kind, symbol, start, end):
     return REFERENCE_CACHE_DIR / f"{kind}_{symbol}_{start}_{end}.json"
+
+
+def _history_segments(symbol, start, end):
+    start_ts = pd.Timestamp(start).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    definitions = HISTORICAL_TICKER_SEGMENTS.get(
+        str(symbol).upper(),
+        [{"symbol": str(symbol).upper()}],
+    )
+    segments = []
+
+    for definition in definitions:
+        segment_symbol = str(definition.get("symbol") or symbol).upper()
+        segment_start = start_ts
+        segment_end = end_ts
+
+        if definition.get("start"):
+            segment_start = max(segment_start, pd.Timestamp(definition["start"]).normalize())
+        if definition.get("end"):
+            segment_end = min(segment_end, pd.Timestamp(definition["end"]).normalize())
+        if segment_end < segment_start:
+            continue
+
+        segments.append((segment_symbol, segment_start, segment_end))
+
+    return segments or [(str(symbol).upper(), start_ts, end_ts)]
 
 
 def _daily_series_from_results(results, today_date):
@@ -247,7 +280,19 @@ def get_polygon_splits(symbols, start, end):
 
     out = {}
     for sym in symbols:
-        out[sym] = _fetch_polygon_reference_results(sym, "splits", "execution_date", start, end, api_key)
+        results = []
+        for segment_symbol, segment_start, segment_end in _history_segments(sym, start, end):
+            results.extend(
+                _fetch_polygon_reference_results(
+                    segment_symbol,
+                    "splits",
+                    "execution_date",
+                    segment_start.strftime("%Y-%m-%d"),
+                    segment_end.strftime("%Y-%m-%d"),
+                    api_key,
+                )
+            )
+        out[sym] = sorted(results, key=lambda item: item.get("execution_date") or "")
     return out
 
 
@@ -272,7 +317,18 @@ def get_polygon_dividends(symbols, start, end):
     series_by_symbol = {}
 
     for sym in symbols:
-        events = _fetch_polygon_reference_results(sym, "dividends", "ex_dividend_date", start, end, api_key)
+        events = []
+        for segment_symbol, segment_start, segment_end in _history_segments(sym, start, end):
+            events.extend(
+                _fetch_polygon_reference_results(
+                    segment_symbol,
+                    "dividends",
+                    "ex_dividend_date",
+                    segment_start.strftime("%Y-%m-%d"),
+                    segment_end.strftime("%Y-%m-%d"),
+                    api_key,
+                )
+            )
         amounts_by_date = {}
         split_events = splits_by_symbol.get(sym, [])
 
@@ -329,7 +385,7 @@ def get_polygon_prices(symbols, start, end):
     """Simplified and deterministic daily+intraday fetcher.
 
     Behavior:
-      - Fetches recent daily closes from Polygon for [polygon_start, fetch_end]
+      - Fetches recent daily closes from Polygon for each historical ticker segment
       - Falls back to yfinance for any prefix older than Polygon's 5-year history window
       - Supports start=end=today by seeding the series from a real intraday print when available
       - Only adds a shared "today" row if at least one symbol has a real intraday print today
@@ -348,8 +404,6 @@ def get_polygon_prices(symbols, start, end):
     end_ts = pd.Timestamp(end).normalize()
     effective_end_ts = min(end_ts, today_date_naive)
     polygon_history_start = (today_date_naive - pd.DateOffset(years=5)).normalize()
-    polygon_start = max(start_ts, polygon_history_start).strftime("%Y-%m-%d")
-
     cutoff_days = 1
     fetch_end_ts = min(effective_end_ts, (now - pd.Timedelta(days=cutoff_days)).normalize().tz_localize(None))
     fetch_end = fetch_end_ts.strftime("%Y-%m-%d")
@@ -359,24 +413,35 @@ def get_polygon_prices(symbols, start, end):
 
     for sym in symbols:
         series_parts = []
+        history_segments = _history_segments(sym, start_ts, effective_end_ts)
 
-        yfinance_end_ts = min(polygon_history_start, effective_end_ts + pd.Timedelta(days=1))
-        if start_ts < yfinance_end_ts:
-            yfinance_series = _fetch_yfinance_daily_series(
-                sym,
-                start_ts.strftime("%Y-%m-%d"),
-                yfinance_end_ts.strftime("%Y-%m-%d"),
-                today_date,
-            )
-            if not yfinance_series.empty:
-                series_parts.append(yfinance_series)
+        for segment_symbol, segment_start_ts, segment_end_ts in history_segments:
+            yfinance_end_ts = min(polygon_history_start, segment_end_ts + pd.Timedelta(days=1))
+            if segment_start_ts < yfinance_end_ts:
+                yfinance_series = _fetch_yfinance_daily_series(
+                    segment_symbol,
+                    segment_start_ts.strftime("%Y-%m-%d"),
+                    yfinance_end_ts.strftime("%Y-%m-%d"),
+                    today_date,
+                )
+                if not yfinance_series.empty:
+                    series_parts.append(yfinance_series)
 
-        polygon_series = _fetch_polygon_daily_series(sym, polygon_start, fetch_end, api_key, today_date)
-        if not polygon_series.empty:
-            series_parts.append(polygon_series)
+            polygon_segment_start_ts = max(segment_start_ts, polygon_history_start)
+            polygon_segment_end_ts = min(segment_end_ts, fetch_end_ts)
+            if polygon_segment_start_ts <= polygon_segment_end_ts:
+                polygon_series = _fetch_polygon_daily_series(
+                    segment_symbol,
+                    polygon_segment_start_ts.strftime("%Y-%m-%d"),
+                    polygon_segment_end_ts.strftime("%Y-%m-%d"),
+                    api_key,
+                    today_date,
+                )
+                if not polygon_series.empty:
+                    series_parts.append(polygon_series)
 
         intraday_summary = (
-            _fetch_intraday_summary(sym, today_str, api_key)
+            _fetch_intraday_summary(history_segments[-1][0], today_str, api_key)
             if effective_end_ts == today_date_naive
             else {"current": None, "open": None}
         )
