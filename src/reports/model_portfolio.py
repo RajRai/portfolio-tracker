@@ -60,6 +60,23 @@ def _parse_history_window(value: dict | None) -> tuple[pd.Timestamp, pd.Timestam
     return parsed_start, parsed_end
 
 
+def _intersect_history_windows(
+    windows: list[tuple[pd.Timestamp, pd.Timestamp] | None],
+) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    active_windows = [window for window in windows if window is not None]
+    if not active_windows:
+        return None
+
+    start_date = max(window[0] for window in active_windows)
+    end_date = min(window[1] for window in active_windows)
+    if end_date < start_date:
+        raise ToolDataError(
+            "No common date range was found between the selected source portfolio histories",
+            400,
+        )
+    return start_date, end_date
+
+
 def _today_date() -> pd.Timestamp:
     return pd.Timestamp(datetime.now().date()).normalize()
 
@@ -169,12 +186,20 @@ def _parse_benchmark_config(benchmark: dict) -> dict:
     if mode == "portfolio":
         holdings = _normalize_weighted_holdings(benchmark.get("holdings"), "benchmark portfolio")
         label = str(benchmark.get("label") or "Benchmark Portfolio").strip() or "Benchmark Portfolio"
+        weight_history = _weight_history_frame(benchmark.get("weightHistory"))
+        history_window = _parse_history_window(benchmark.get("historyWindow"))
         return {
             "mode": "portfolio",
             "label": label,
             "holdings": holdings,
-            "symbols": [holding["ticker"] for holding in holdings],
+            "symbols": (
+                list(weight_history.columns)
+                if weight_history is not None
+                else [holding["ticker"] for holding in holdings]
+            ),
             "weighting_mode": _weighting_mode(benchmark.get("weightingMode")),
+            "weight_history": weight_history,
+            "history_window": history_window,
         }
 
     raise ToolDataError("Choose a benchmark ticker or portfolio", 400)
@@ -802,24 +827,29 @@ def create_model_portfolio_report(
     requested_end_date = _parse_date(body.get("endDate") or _today_date().strftime("%Y-%m-%d"), "End date")
     portfolio_history_window = _parse_history_window(body.get("portfolioHistoryWindow"))
     portfolio_weight_history = _weight_history_frame(body.get("portfolioWeightHistory"))
-    if portfolio_weight_history is not None and portfolio_history_window is not None:
-        requested_start_date, requested_end_date = portfolio_history_window
+    benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
+    common_history_window = _intersect_history_windows([
+        portfolio_history_window if portfolio_weight_history is not None else None,
+        benchmark_config.get("history_window") if benchmark_config.get("weight_history") is not None else None,
+    ])
+    if common_history_window is not None:
+        requested_start_date, requested_end_date = common_history_window
     if requested_end_date < requested_start_date:
         raise ToolDataError("End date must be on or after the start date", 400)
     portfolio_rebalance_period = _rebalance_period(body.get("portfolioRebalancePeriod"))
     benchmark_rebalance_period = _rebalance_period(body.get("benchmarkRebalancePeriod"))
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
     portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
-    benchmark_config = _parse_benchmark_config(body.get("benchmark") or {})
     portfolio_symbols = (
         list(portfolio_weight_history.columns)
         if portfolio_weight_history is not None
         else [holding["ticker"] for holding in portfolio_holdings]
     )
+    benchmark_symbols = benchmark_config["symbols"]
 
     symbols = list(
         dict.fromkeys(
-            portfolio_symbols + benchmark_config["symbols"]
+            portfolio_symbols + benchmark_symbols
         )
     )
     prices = _price_matrix(symbols, requested_start_date, requested_end_date)
@@ -833,9 +863,13 @@ def create_model_portfolio_report(
     ].copy().ffill()
     weighting_warnings = []
     needs_market_cap_weighting = (
-        portfolio_weight_history is None and portfolio_weighting_mode == "market_cap_start"
+        (
+            portfolio_weight_history is None
+            and portfolio_weighting_mode == "market_cap_start"
+        )
         or (
             benchmark_config["mode"] == "portfolio"
+            and benchmark_config.get("weight_history") is None
             and benchmark_config.get("weighting_mode") == "market_cap_start"
         )
     )
@@ -861,7 +895,11 @@ def create_model_portfolio_report(
             "Portfolio",
         )
         weighting_warnings.append(portfolio_weighting_warning)
-    if benchmark_config["mode"] == "portfolio" and benchmark_config.get("weighting_mode") == "market_cap_start":
+    if (
+        benchmark_config["mode"] == "portfolio"
+        and benchmark_config.get("weight_history") is None
+        and benchmark_config.get("weighting_mode") == "market_cap_start"
+    ):
         benchmark_config["holdings"], benchmark_weighting_warning = _apply_start_date_market_cap_weights(
             benchmark_config["holdings"],
             working_prices,
@@ -899,6 +937,14 @@ def create_model_portfolio_report(
             [{"ticker": benchmark_config["ticker"], "weight": 1.0}],
             asset_total_returns,
             effective_start_date,
+        )
+    elif benchmark_config.get("weight_history") is not None:
+        benchmark_basket = _build_weight_history_basket(
+            working_prices,
+            asset_total_returns,
+            benchmark_config["weight_history"],
+            effective_start_date,
+            effective_end_date,
         )
     else:
         benchmark_basket = _build_buy_and_hold_basket(
@@ -995,7 +1041,7 @@ def create_model_portfolio_report(
     range_info = _symbol_range_rows(
         prices,
         portfolio_symbols,
-        benchmark_config["symbols"],
+        benchmark_symbols,
         effective_start_date,
         effective_end_date,
         requested_start_date,

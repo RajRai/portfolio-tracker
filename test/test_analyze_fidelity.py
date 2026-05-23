@@ -1,11 +1,14 @@
 import pandas as pd
 import pytest
 
+from src.reports import analyze_fidelity
 from src.reports.analyze_fidelity import (
     _apply_future_split_adjustments,
     _apply_inception_day_return_override,
     _estimate_inception_day_return,
     _expand_fetch_start_for_short_report_window,
+    _fetch_polygon_prices_with_minimum_history,
+    _holding_today_gl_series,
     _is_invalid_sell_post_quantity,
     _statement_cash_income_series,
     _write_quantstats_report,
@@ -195,6 +198,46 @@ def test_expand_fetch_start_for_short_report_window_adds_previous_business_day()
     assert expanded == pd.Timestamp("2026-05-21")
 
 
+def test_expand_fetch_start_for_short_report_window_adds_previous_business_day_when_only_one_business_day_is_in_range():
+    start = pd.Timestamp("2026-05-22")
+    end = pd.Timestamp("2026-05-23")
+
+    expanded = _expand_fetch_start_for_short_report_window(start, end)
+
+    assert expanded == pd.Timestamp("2026-05-21")
+
+
+def test_fetch_polygon_prices_with_minimum_history_backfills_when_initial_window_has_one_trading_row(monkeypatch):
+    first_pass = pd.DataFrame(
+        {"AAA": [110.0], "VT": [100.0]},
+        index=pd.to_datetime(["2026-05-22"]),
+    )
+    second_pass = pd.DataFrame(
+        {"AAA": [100.0, 110.0], "VT": [99.0, 100.0]},
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    calls = []
+
+    def fake_get_polygon_prices(symbols, start, end):
+        calls.append((tuple(symbols), start, end))
+        return first_pass.copy() if len(calls) == 1 else second_pass.copy()
+
+    monkeypatch.setattr(analyze_fidelity, "get_polygon_prices", fake_get_polygon_prices)
+
+    fetch_start, prices = _fetch_polygon_prices_with_minimum_history(
+        ["AAA", "VT"],
+        pd.Timestamp("2026-05-22"),
+        pd.Timestamp("2026-05-25"),
+    )
+
+    assert calls == [
+        (("AAA", "VT"), "2026-05-22", "2026-05-25"),
+        (("AAA", "VT"), "2026-05-21", "2026-05-25"),
+    ]
+    assert fetch_start == pd.Timestamp("2026-05-21")
+    assert list(prices.index) == list(pd.to_datetime(["2026-05-21", "2026-05-22"]))
+
+
 def test_estimate_inception_day_return_uses_basis_and_open_fallback():
     lot_book = {
         "AAA": [{"qty": 2.0, "price": 10.0}],
@@ -241,6 +284,51 @@ def test_apply_inception_day_return_override_updates_today_when_portfolio_has_no
     adjusted = _apply_inception_day_return_override(returns, value_df, lot_book, prices)
 
     assert adjusted.loc[pd.Timestamp("2026-05-22")] == pytest.approx(0.1)
+
+
+def test_apply_inception_day_return_override_updates_latest_trading_day_when_today_is_non_market_day(monkeypatch):
+    monkeypatch.setattr(
+        "src.reports.analyze_fidelity.datetime",
+        type(
+            "FixedDateTime",
+            (),
+            {"now": staticmethod(lambda: pd.Timestamp("2026-05-23 12:00:00").to_pydatetime())},
+        ),
+    )
+
+    returns = pd.Series(
+        [0.0, 0.0],
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    value_df = pd.DataFrame(
+        {"AAA": [0.0, 110.0]},
+        index=returns.index,
+    )
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 110.0]},
+        index=returns.index,
+    )
+    lot_book = {"AAA": [{"qty": 1.0, "price": 100.0}]}
+
+    adjusted = _apply_inception_day_return_override(returns, value_df, lot_book, prices)
+
+    assert adjusted.loc[pd.Timestamp("2026-05-22")] == pytest.approx(0.1)
+
+
+def test_holding_today_gl_series_uses_inception_logic_for_new_position_instead_of_inf():
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 110.0]},
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    quantities = pd.DataFrame(
+        {"AAA": [0.0, 1.0]},
+        index=prices.index,
+    )
+    lot_book = {"AAA": [{"qty": 1.0, "price": 100.0}]}
+
+    today_gl = _holding_today_gl_series(prices, quantities, lot_book)
+
+    assert today_gl.loc["AAA"] == pytest.approx(0.1)
 
 
 def test_write_quantstats_report_falls_back_for_flat_short_history(tmp_path, monkeypatch):

@@ -56,9 +56,39 @@ def add_missing_zeros(returns: pd.Series) -> pd.Series:
 def _expand_fetch_start_for_short_report_window(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.Timestamp:
     start_day = pd.Timestamp(start_date).normalize()
     end_day = pd.Timestamp(end_date).normalize()
-    if start_day == end_day:
+    if len(pd.date_range(start_day, end_day, freq="B")) < 2:
         return (start_day - pd.offsets.BDay(1)).normalize()
     return start_day
+
+
+def _fetch_polygon_prices_with_minimum_history(
+    symbols: list[str],
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    minimum_rows: int = 2,
+    max_backfill_steps: int = 5,
+) -> tuple[pd.Timestamp, pd.DataFrame]:
+    fetch_start_date = _expand_fetch_start_for_short_report_window(start_date, end_date)
+    prices = pd.DataFrame()
+
+    for _ in range(max_backfill_steps + 1):
+        print(
+            f"Fetching Polygon prices {fetch_start_date.strftime('%Y-%m-%d')} -> {end_date.strftime('%Y-%m-%d')}"
+        )
+        prices = get_polygon_prices(
+            symbols,
+            fetch_start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d"),
+        )
+        if prices.empty or len(prices.index.unique()) >= minimum_rows:
+            break
+
+        next_fetch_start_date = (fetch_start_date - pd.offsets.BDay(1)).normalize()
+        if next_fetch_start_date >= fetch_start_date:
+            break
+        fetch_start_date = next_fetch_start_date
+
+    return fetch_start_date, prices
 
 
 def _estimate_inception_day_return(
@@ -106,9 +136,6 @@ def _apply_inception_day_return_override(
         return returns
 
     latest_date = pd.Timestamp(returns.index.max()).normalize()
-    today = pd.Timestamp(datetime.now().date()).normalize()
-    if latest_date != today:
-        return returns
 
     portfolio_values = value_df.sum(axis=1).reindex(returns.index).fillna(0.0)
     current_total_value = float(portfolio_values.loc[latest_date])
@@ -138,6 +165,57 @@ def _apply_inception_day_return_override(
     adjusted_returns = returns.copy()
     adjusted_returns.loc[latest_date] = estimated_return
     return adjusted_returns
+
+
+def _holding_today_gl_series(
+    prices: pd.DataFrame,
+    current_lot_qty_df: pd.DataFrame,
+    lot_book: dict[str, list[dict]],
+) -> pd.Series:
+    if prices.empty or current_lot_qty_df.empty:
+        return pd.Series(dtype=float)
+
+    latest_date = pd.Timestamp(prices.index.max()).normalize()
+    today_gl = prices.pct_change().loc[latest_date].reindex(prices.columns)
+    latest_quantities = current_lot_qty_df.loc[latest_date].reindex(prices.columns).fillna(0.0)
+    prior_quantities = (
+        current_lot_qty_df.shift(1).loc[latest_date].reindex(prices.columns).fillna(0.0)
+        if len(current_lot_qty_df.index) > 1
+        else pd.Series(0.0, index=prices.columns, dtype=float)
+    )
+
+    new_position_symbols = [
+        symbol
+        for symbol in prices.columns
+        if latest_quantities.get(symbol, 0.0) > SHARE_EPSILON
+        and prior_quantities.get(symbol, 0.0) <= SHARE_EPSILON
+    ]
+    if not new_position_symbols:
+        return today_gl
+
+    missing_basis_symbols = {
+        symbol
+        for symbol in new_position_symbols
+        if any(float(lot.get("price") or 0.0) <= SHARE_EPSILON for lot in lot_book.get(symbol, []))
+    }
+    session_prices = (
+        get_polygon_session_prices(sorted(missing_basis_symbols), latest_date)
+        if missing_basis_symbols
+        else None
+    )
+
+    adjusted_today_gl = today_gl.copy()
+    latest_prices = prices.loc[latest_date]
+    for symbol in new_position_symbols:
+        estimated_return = _estimate_inception_day_return(
+            {symbol: lot_book.get(symbol, [])},
+            latest_prices.reindex([symbol]),
+            session_prices=session_prices,
+        )
+        if estimated_return is not None and np.isfinite(estimated_return):
+            adjusted_today_gl.loc[symbol] = estimated_return
+
+    return adjusted_today_gl
 
 
 def _write_short_history_report(output_path: Path, title: str, message: str):
@@ -593,16 +671,12 @@ def main():
         # ============================================================
         start_date = df["Run Date"].min().normalize()
         end_date = pd.Timestamp(datetime.now().date()).normalize()
-        fetch_start_date = _expand_fetch_start_for_short_report_window(start_date, end_date)
         all_symbols = list(dict.fromkeys([*symbols, BENCHMARK]))
 
-        print(
-            f"Fetching Polygon prices {fetch_start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}"
-        )
-        all_prices = get_polygon_prices(
+        fetch_start_date, all_prices = _fetch_polygon_prices_with_minimum_history(
             all_symbols,
-            fetch_start_date.strftime("%Y-%m-%d"),
-            end_date.strftime("%Y-%m-%d"),
+            start_date,
+            end_date,
         )
         prices = all_prices.reindex(columns=symbols)
         if prices.empty:
@@ -786,7 +860,7 @@ def main():
         current_lot_value_df = current_lot_qty_df * prices.reindex(current_lot_qty_df.index)
         current_quantities = current_lot_qty_df.loc[latest_date].reindex(current_weights.index)
         current_values = current_lot_value_df.loc[latest_date].reindex(current_weights.index)
-        today_gl = current_lot_value_df.pct_change().loc[latest_date].reindex(current_weights.index)
+        today_gl = _holding_today_gl_series(prices, current_lot_qty_df, lot_book).reindex(current_weights.index)
         total_gl = current_values.div(current_lot_basis.reindex(current_weights.index).replace(0, np.nan)) - 1.0
 
         def _fmt_pct(v):
