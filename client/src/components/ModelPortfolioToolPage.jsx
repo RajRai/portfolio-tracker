@@ -41,6 +41,12 @@ const defaultEndDateString = () => rollWeekendBack(new Date()).toISOString().sli
 const scopeLabel = (scope) =>
     scope === "both" ? "Both" : scope === "benchmark" ? "Benchmark" : "Portfolio";
 
+const TOOL_TITLE = "Portfolio Backsimulator";
+const DEFAULT_REPORT_NAME = "Portfolio Backsimulation";
+const MANUAL_WEIGHTS_HELPER_TEXT =
+    "One holding per line. Examples: AAPL, AAPL 25, or MSFT 12.5. If you leave the number off, it defaults to 1.";
+const DATE_LOCK_PENDING_TEXT = "Loading saved portfolio history will set this date range automatically.";
+
 const REBALANCE_PERIOD_OPTIONS = [
     { value: "none", label: "No rebalancing" },
     { value: "daily", label: "Daily" },
@@ -118,7 +124,7 @@ function WeightInputSection({
     showSourcePicker = true,
     sourceControls = null,
     disableWeightsInput = false,
-    weightsHelperText = "One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1.",
+    weightsHelperText = MANUAL_WEIGHTS_HELPER_TEXT,
     hideParsedTable = false,
     useMarketCapWeights,
     onUseMarketCapWeightsChange,
@@ -156,7 +162,7 @@ function WeightInputSection({
             {sourceSummary && (
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
                     {sourceSummary.weightSource === "historical"
-                        ? `Loaded full weight history from ${sourceSummary.label}.`
+                        ? `Loaded historical weights from ${sourceSummary.label}.`
                         : `Loaded current weights from ${sourceSummary.label}.`}
                 </Typography>
             )}
@@ -183,7 +189,7 @@ function WeightInputSection({
                         onChange={(event) => onUseMarketCapWeightsChange(event.target.checked)}
                     />
                 }
-                label="Market cap weight as of the start date when possible"
+                label="Use market cap weights at the start date when available"
             />
 
             {onRebalancePeriodChange ? (
@@ -209,13 +215,13 @@ function WeightInputSection({
 
             {!!parsed.invalidLines.length && (
                 <Alert severity="warning" sx={{ mt: 1.5 }}>
-                    Fix {parsed.invalidLines.length} invalid line{parsed.invalidLines.length === 1 ? "" : "s"} before generating the report.
+                    Fix {parsed.invalidLines.length} invalid line{parsed.invalidLines.length === 1 ? "" : "s"} before running the backsimulation.
                 </Alert>
             )}
 
             {useMarketCapWeights && (
                 <Alert severity="info" sx={{ mt: 1.5 }}>
-                    Entered weights are used only as a fallback here. When possible, the tool will estimate start-date market caps from current market cap and the historical price ratio.
+                    The weights you typed are only a fallback here. When possible, this will estimate start-date market caps and use those instead.
                 </Alert>
             )}
 
@@ -250,7 +256,7 @@ function WeightInputSection({
 }
 
 export default function ModelPortfolioToolPage({ accounts }) {
-    const [reportName, setReportName] = useState("Model Portfolio");
+    const [reportName, setReportName] = useState(DEFAULT_REPORT_NAME);
     const [startDate, setStartDate] = useState(defaultStartDateString());
     const [endDate, setEndDate] = useState(defaultEndDateString());
     const [portfolioSourceAccountId, setPortfolioSourceAccountId] = useState(accounts[0]?.id || "");
@@ -358,7 +364,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
         let cancelled = false;
         const applyPrefill = async () => {
             setPortfolioSourceAccountId(sourceAccountId);
-            setReportName(params.get("reportName")?.trim() || "Model Portfolio");
+            setReportName(params.get("reportName")?.trim() || DEFAULT_REPORT_NAME);
             setBenchmarkMode("ticker");
             setBenchmarkTicker(normalizeTicker(params.get("benchmarkTicker")) || "VT");
             setBenchmarkWeightsText("");
@@ -473,20 +479,20 @@ export default function ModelPortfolioToolPage({ accounts }) {
 
     const historyDateHelperText =
         historyWindowConflict
-            ? "The selected source histories do not overlap."
+            ? "These saved portfolios do not overlap in time."
             : lockedDateWindow?.valid
-                ? `Locked to ${lockedDateWindow.label}: ${lockedDateWindow.startDate} through ${lockedDateWindow.endDate}.`
+                ? `Using ${lockedDateWindow.label}: ${lockedDateWindow.startDate} through ${lockedDateWindow.endDate}.`
                 : historyWindowPending
-                    ? "Loading selected source history will lock this date range."
+                    ? DATE_LOCK_PENDING_TEXT
                     : null;
     const portfolioDateHelperText = historyDateHelperText
         ?? (anyHistoryActive
-            ? "Loading selected source history will lock this date range."
-            : "Uses the next available trading day on or after this date.");
+            ? DATE_LOCK_PENDING_TEXT
+            : "Uses the next available market day on or after this date.");
     const portfolioEndDateHelperText = historyDateHelperText
         ?? (anyHistoryActive
-            ? "Loading selected source history will lock this date range."
-            : "Uses the last available trading day on or before this date.");
+            ? DATE_LOCK_PENDING_TEXT
+            : "Uses the last available market day on or before this date.");
 
     React.useEffect(() => {
         if (!anyHistoryActive || !lockedDateWindow?.valid) return;
@@ -595,10 +601,10 @@ export default function ModelPortfolioToolPage({ accounts }) {
     return (
         <Box sx={{ width: "100%", maxWidth: 1400, mx: "auto", px: { xs: 1.5, sm: 3 }, py: 3 }}>
             <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
-                Model Portfolio Report
+                {TOOL_TITLE}
             </Typography>
             <Typography color="text.secondary" sx={{ mb: 2 }}>
-                Generate a point-in-time report from model weights and compare it against a ticker or another weighted portfolio.
+                Run a backsimulation for a portfolio over a past date range and compare it against a benchmark ticker or portfolio.
             </Typography>
 
             <Paper sx={{ p: { xs: 1.5, sm: 2 }, borderRadius: 2, mb: 2 }}>
@@ -643,13 +649,13 @@ export default function ModelPortfolioToolPage({ accounts }) {
 
                     {historyWindowConflict && (
                         <Alert severity="warning">
-                            The selected source histories do not overlap, so there is no common date range to backtest.
+                            The selected saved portfolios do not overlap in time, so there is no common date range to backsimulate.
                         </Alert>
                     )}
 
                     <WeightInputSection
-                        title="Model Portfolio"
-                        description="Enter the weights you want to backtest, or seed them from an existing portfolio."
+                        title="Portfolio"
+                        description="Choose the portfolio you want to backsimulate, or enter custom tickers and weights."
                         accounts={accounts}
                         sourceAccountId={portfolioSourceAccountId}
                         setSourceAccountId={setPortfolioSourceAccountId}
@@ -671,11 +677,11 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                             }}
                                         />
                                     }
-                                    label="Use full weight history"
+                                    label="Use historical weights from this portfolio"
                                 />
                                 {portfolioInferWeightsFromHistory && (
                                     <Alert severity="info" sx={{ mt: 1 }}>
-                                        The backsim uses the selected portfolio's full historical weights over time and locks the date range to that account's report window.
+                                        This backsimulation follows the selected portfolio's historical weights over time and locks the date range to that portfolio's history.
                                     </Alert>
                                 )}
                             </Box>
@@ -684,8 +690,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         hideParsedTable={portfolioInferWeightsFromHistory}
                         weightsHelperText={
                             portfolioInferWeightsFromHistory
-                                ? "Using the selected portfolio's full historical weights over time."
-                                : "One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1."
+                                ? "Using the selected portfolio's historical weights over time."
+                                : MANUAL_WEIGHTS_HELPER_TEXT
                         }
                         useMarketCapWeights={portfolioUseMarketCapWeights}
                         onUseMarketCapWeightsChange={setPortfolioUseMarketCapWeights}
@@ -693,7 +699,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         rebalancePeriod={portfolioRebalancePeriod}
                         onRebalancePeriodChange={setPortfolioRebalancePeriod}
                         disableRebalancePeriod={portfolioInferWeightsFromHistory}
-                        rebalanceLabel="Strategy rebalance cadence"
+                        rebalanceLabel="Portfolio rebalance cadence"
                     />
 
                     <Divider />
@@ -738,7 +744,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                     title={benchmarkMode === "existingPortfolio" ? "Benchmark Portfolio" : "Custom Benchmark"}
                                     description={
                                         benchmarkMode === "existingPortfolio"
-                                            ? "Load an existing portfolio as the benchmark source, then edit if needed."
+                                            ? "Load a saved portfolio as the benchmark."
                                             : "Enter custom benchmark weights."
                                     }
                                     accounts={accounts}
@@ -763,11 +769,11 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                                         }}
                                                     />
                                                 )}
-                                                label="Use full weight history"
+                                                label="Use historical weights from this portfolio"
                                             />
                                             {benchmarkHistoryActive && (
                                                 <Alert severity="info" sx={{ mt: 1 }}>
-                                                    The benchmark uses the selected portfolio's full historical weights over time and shares the backsim date range with any other history-based source.
+                                                    This benchmark follows the selected portfolio's historical weights over time and shares the date range with any other history-based source.
                                                 </Alert>
                                             )}
                                         </Box>
@@ -776,8 +782,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                     hideParsedTable={benchmarkHistoryActive}
                                     weightsHelperText={
                                         benchmarkHistoryActive
-                                            ? "Using the selected benchmark portfolio's full historical weights over time."
-                                            : "One holding per line. Use formats like AAPL, AAPL 25, or MSFT 12.5. Bare tickers default to weight 1."
+                                            ? "Using the selected benchmark portfolio's historical weights over time."
+                                            : MANUAL_WEIGHTS_HELPER_TEXT
                                     }
                                     useMarketCapWeights={benchmarkUseMarketCapWeights}
                                     onUseMarketCapWeightsChange={setBenchmarkUseMarketCapWeights}
@@ -797,7 +803,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                             onClick={generateReport}
                             disabled={!canGenerate || loadingReport}
                         >
-                            Generate Report
+                            Run Backsimulation
                         </Button>
                     </Stack>
                 </Stack>
@@ -842,8 +848,8 @@ export default function ModelPortfolioToolPage({ accounts }) {
                                 <TableCell>Scope</TableCell>
                                 <TableCell align="right">First Date</TableCell>
                                 <TableCell align="right">Last Date</TableCell>
-                                <TableCell align="center">Limits Start</TableCell>
-                                <TableCell align="center">Limits End</TableCell>
+                                <TableCell align="center">Sets Start</TableCell>
+                                <TableCell align="center">Sets End</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
@@ -870,7 +876,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 ) : (
                     <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
                         <Typography variant="body2" color="text.secondary">
-                            Generated reports open here in a dedicated viewer.
+                            Your backsimulation report will appear here.
                         </Typography>
                     </Box>
                 )}

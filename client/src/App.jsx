@@ -688,7 +688,7 @@ function DesktopToolsMenu({ page, onNavigate }) {
                     Earnings Calendar
                 </MenuItem>
                 <MenuItem selected={page === "modelPortfolio"} onClick={() => handleNavigate("modelPortfolio")}>
-                    Model Portfolio Report
+                    Portfolio Backsimulator
                 </MenuItem>
             </Menu>
         </>
@@ -751,7 +751,7 @@ function MobileMenu({ onNavigate }) {
                         onNavigate("modelPortfolio");
                     }}
                 >
-                    Model Portfolio Report
+                    Portfolio Backsimulator
                 </MenuItem>
 
                 <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>
