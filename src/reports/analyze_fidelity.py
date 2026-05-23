@@ -561,6 +561,13 @@ def _load_generated_accounts_index(index_path: Path, full_rebuild: bool) -> list
         return json.load(f)
 
 
+def _write_generated_accounts_index(index_path: Path, accounts_list: list[dict]) -> None:
+    tmp_path = index_path.with_suffix(index_path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(accounts_list, f, indent=2)
+    os.replace(tmp_path, index_path)
+
+
 def main():
     # ============================================================
     #  1. Configuration
@@ -589,6 +596,7 @@ def main():
     out_dir.mkdir(exist_ok=True)
     index_path = out_dir / "accounts.json"
     accounts_list = _load_generated_accounts_index(index_path, full_rebuild)
+    generated_any_accounts = False
 
     # ============================================================
     #  Process each account
@@ -931,8 +939,7 @@ def main():
         }
 
         accounts_list = _upsert_accounts_index_entry(accounts_list, accounts_entry, all_accounts)
-        with open(index_path, "w", encoding="utf-8") as f:
-            json.dump(accounts_list, f, indent=2)
+        generated_any_accounts = True
 
         print(f"✅ CSVs generated for {account_id}")
 
@@ -992,6 +999,9 @@ def main():
             encoding="utf-8"
         )
         print(f"✅ Interactive JSON written: {interactive_json_path}")
+
+    if generated_any_accounts:
+        _write_generated_accounts_index(index_path, accounts_list)
 
 if __name__ == "__main__":
     main()
