@@ -1,4 +1,4 @@
-import React, { useEffect, useState, memo, useMemo, useSyncExternalStore } from "react";
+import React, { useEffect, useState, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import {
     Button,
     CircularProgress,
@@ -7,6 +7,7 @@ import {
     Divider,
     Box,
 } from "@mui/material";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import Papa from "papaparse";
 import { alpha, useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
@@ -67,6 +68,28 @@ const timestampToNyDate = (value) => {
 
 const EMPTY_LIVE_SNAPSHOT = { status: "off", message: "", quotes: {} };
 const DATE_RANGES = ["1m", "3m", "6m", "1y", "all"];
+const WEIGHTS_COLOR_PALETTE = [
+    "#4C78A8",
+    "#F58518",
+    "#54A24B",
+    "#E45756",
+    "#72B7B2",
+    "#B279A2",
+    "#FF9DA6",
+    "#9D755D",
+    "#BAB0AC",
+    "#EECA3B",
+    "#2E86AB",
+    "#A23B72",
+    "#3B8EA5",
+    "#7A9E7E",
+    "#C06C84",
+    "#6C5B7B",
+    "#355C7D",
+    "#F8B195",
+    "#99B898",
+    "#F67280",
+];
 
 const upsertSeriesPoint = (series, point) => {
     if (!series?.length) return point ? [point] : [];
@@ -217,6 +240,44 @@ const withComputedAlpha = (payload) => {
         ...payload,
         alpha: computeDailyAlphaPayload(payload.portfolio?.daily, payload.benchmark?.daily),
     };
+};
+
+const formatHoverDate = (dateText) => {
+    if (!dateText) return "";
+    const date = new Date(`${dateText}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return dateText;
+    return new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+    }).format(date);
+};
+
+const formatWeightPercent = (value) => `${(value * 100).toFixed(1)}%`;
+
+const nearestTimestampIndex = (sortedValues, target) => {
+    if (!sortedValues.length || !Number.isFinite(target)) return -1;
+    if (target <= sortedValues[0]) return 0;
+    if (target >= sortedValues[sortedValues.length - 1]) return sortedValues.length - 1;
+
+    let lo = 0;
+    let hi = sortedValues.length - 1;
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const value = sortedValues[mid];
+        if (value === target) return mid;
+        if (value < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    const prev = sortedValues[Math.max(0, hi)];
+    const next = sortedValues[Math.min(sortedValues.length - 1, lo)];
+    return Math.abs(prev - target) <= Math.abs(next - target)
+        ? Math.max(0, hi)
+        : Math.min(sortedValues.length - 1, lo);
 };
 
 const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
@@ -517,10 +578,15 @@ const RangeSelector = memo(({ range, onChange, theme }) => (
 
 export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange }) {
     const theme = useTheme();
+    const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
     const [data, setData] = useState(null);
     const [range, setRange] = useState("all");
     const [Plotly, setPlotly] = useState(null);
     const [liveInputs, setLiveInputs] = useState(null);
+    const [weightsHover, setWeightsHover] = useState(null);
+    const [weightsPinnedDate, setWeightsPinnedDate] = useState(null);
+    const [weightsHoverSort, setWeightsHoverSort] = useState("weight");
+    const weightsSectionRef = useRef(null);
     const liveSnapshot = useSyncExternalStore(
         liveStore?.subscribe || (() => () => {}),
         liveStore?.getSnapshot || (() => EMPTY_LIVE_SNAPSHOT),
@@ -657,6 +723,34 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
     }, [liveInputs, liveSnapshot]);
 
+    const displayData = useMemo(
+        () => withLivePerformance(data, liveReturns, liveInputs, liveSnapshot.quotes),
+        [data, liveReturns, liveInputs, liveSnapshot]
+    );
+    const weightsHoverData = useMemo(
+        () => {
+            const series = (displayData?.weights || []).map((item, index) => ({
+                name: item.name,
+                color: WEIGHTS_COLOR_PALETTE[index % WEIGHTS_COLOR_PALETTE.length],
+                valuesByDate: new Map(
+                    (item.points || [])
+                        .filter((point) => point?.t && point?.v != null)
+                        .map((point) => [point.t, point.v])
+                ),
+            }));
+            const dates = [...new Set(
+                series.flatMap((item) => [...item.valuesByDate.keys()])
+            )].sort();
+            return {
+                series,
+                dates,
+                timestamps: dates.map((date) => Date.parse(`${date}T00:00:00`)),
+            };
+        },
+        [displayData?.weights]
+    );
+    const headerText = buildCompactLiveLabel(liveInputs?.tickers || [], liveSnapshot);
+
     // ✅ MINIMAL CHANGE: resize Plotly charts on window size changes
     useEffect(() => {
         if (!Plotly) return;
@@ -678,11 +772,113 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
     }, [Plotly, charts]);
 
-    const displayData = useMemo(
-        () => withLivePerformance(data, liveReturns, liveInputs, liveSnapshot.quotes),
-        [data, liveReturns, liveInputs, liveSnapshot]
-    );
-    const headerText = buildCompactLiveLabel(liveInputs?.tickers || [], liveSnapshot);
+    useEffect(() => {
+        if (!charts.weights.current || !weightsSectionRef.current || !weightsHoverData.dates.length) {
+            return undefined;
+        }
+
+        const plot = charts.weights.current;
+        const wrapper = weightsSectionRef.current;
+        const buildWeightsHoverState = (hoverDate) => {
+            if (!hoverDate) return null;
+            const rows = weightsHoverData.series
+                .slice()
+                .reverse()
+                .map((series) => {
+                    const value = series.valuesByDate.get(hoverDate);
+                    if (value == null || value <= 0.0005) return null;
+                    return {
+                        name: series.name,
+                        color: series.color,
+                        value,
+                    };
+                })
+                .filter(Boolean);
+            return rows.length ? { date: hoverDate, rows } : null;
+        };
+
+        const readHoverStateFromEvent = (event) => {
+            const layout = plot._fullLayout;
+            const xaxis = layout?.xaxis;
+            const yaxis = layout?.yaxis;
+            if (!xaxis || !yaxis || !Array.isArray(xaxis.range)) {
+                return null;
+            }
+
+            const rect = plot.getBoundingClientRect();
+            const offsetX = event.clientX - rect.left - xaxis._offset;
+            const offsetY = event.clientY - rect.top - yaxis._offset;
+            if (
+                !Number.isFinite(offsetX) ||
+                !Number.isFinite(offsetY) ||
+                offsetX < 0 ||
+                offsetX > xaxis._length ||
+                offsetY < 0 ||
+                offsetY > yaxis._length
+            ) {
+                return null;
+            }
+
+            const rangeStart = Date.parse(String(xaxis.range[0]));
+            const rangeEnd = Date.parse(String(xaxis.range[1]));
+            if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeEnd <= rangeStart) {
+                return null;
+            }
+
+            const ratio = offsetX / xaxis._length;
+            const hoverTimestamp = rangeStart + (rangeEnd - rangeStart) * ratio;
+            const dateIndex = nearestTimestampIndex(weightsHoverData.timestamps, hoverTimestamp);
+            return buildWeightsHoverState(weightsHoverData.dates[dateIndex]);
+        };
+
+        const handleMove = (event) => {
+            const next = readHoverStateFromEvent(event);
+            const fallback = weightsPinnedDate ? buildWeightsHoverState(weightsPinnedDate) : null;
+            setWeightsHover((current) => {
+                if (!next) {
+                    if (!fallback) return null;
+                    if (current?.date === fallback.date) return current;
+                    return fallback;
+                }
+                if (current?.date === next.date) return current;
+                return next;
+            });
+        };
+
+        const handleClick = (event) => {
+            const next = readHoverStateFromEvent(event);
+            if (!next) return;
+            setWeightsPinnedDate((current) => (current === next.date ? null : next.date));
+            setWeightsHover(next);
+        };
+
+        const handleLeave = () => {
+            setWeightsHover(weightsPinnedDate ? buildWeightsHoverState(weightsPinnedDate) : null);
+        };
+
+        wrapper.addEventListener("mousemove", handleMove);
+        wrapper.addEventListener("click", handleClick);
+        wrapper.addEventListener("mouseleave", handleLeave);
+
+        return () => {
+            wrapper.removeEventListener("mousemove", handleMove);
+            wrapper.removeEventListener("click", handleClick);
+            wrapper.removeEventListener("mouseleave", handleLeave);
+        };
+    }, [charts, weightsHoverData, weightsPinnedDate]);
+
+    useEffect(() => {
+        setWeightsHover(null);
+        setWeightsPinnedDate(null);
+    }, [account?.id, range, displayData?.weights]);
+
+    const displayWeightsHoverRows = useMemo(() => {
+        if (!weightsHover?.rows?.length) return [];
+        if (weightsHoverSort === "stack") return weightsHover.rows;
+        return [...weightsHover.rows].sort(
+            (a, b) => b.value - a.value || a.name.localeCompare(b.name)
+        );
+    }, [weightsHover?.rows, weightsHoverSort]);
 
     useEffect(() => {
         if (!onHeaderTextChange) return undefined;
@@ -727,43 +923,25 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         const alphaDaily = payload.alpha.daily;
         const alphaCum = payload.alpha.cumulative;
 
-        const weightsTraces = [];
-        for (const s of payload.weights) {
+        const weightsLineTraces = [];
+        payload.weights.forEach((s, index) => {
             const x = s.points.map((p) => p.t);
             const y = s.points.map((p) => p.v);
+            const color = WEIGHTS_COLOR_PALETTE[index % WEIGHTS_COLOR_PALETTE.length];
 
-            weightsTraces.push({
+            weightsLineTraces.push({
                 name: s.name,
                 type: "scatter",
                 mode: "lines",
                 stackgroup: "one",
-                line: { width: 1 },
+                line: { width: 1, color },
+                fillcolor: color,
                 x,
                 y,
                 hoverinfo: "skip",
+                legendgroup: s.name,
             });
-
-            const xf = [];
-            const yf = [];
-            for (let i = 0; i < y.length; i++) {
-                if (Math.abs(y[i]) >= 0.01) {
-                    xf.push(x[i]);
-                    yf.push(y[i]);
-                }
-            }
-
-            weightsTraces.push({
-                name: s.name,
-                type: "scatter",
-                mode: "markers",
-                x: xf,
-                y: yf,
-                marker: { size: 6, opacity: 0 },
-                line: { width: 0 },
-                hovertemplate: "%{y:.1%}<extra>%{fullData.name}</extra>",
-                connectgaps: false,
-            });
-        }
+        });
 
         return {
             cum: {
@@ -855,8 +1033,13 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 layout: { ...baseLayout, yaxis: { tickformat: "+.2%" } },
             },
             weights: {
-                traces: weightsTraces,
-                layout: { ...baseLayout, yaxis: { tickformat: ".0%", rangemode: "tozero" }, hovermode: "x" },
+                traces: weightsLineTraces,
+                layout: {
+                    ...baseLayout,
+                    margin: { l: 48, r: isNarrow ? 16 : 196, t: 24, b: 48 },
+                    yaxis: { tickformat: ".0%", rangemode: "tozero" },
+                    hovermode: false,
+                },
             },
         };
     };
@@ -865,7 +1048,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     useEffect(() => {
         if (!data || !Plotly) return;
 
-        const specs = buildChartSpecs(withComputedAlpha(data));
+        const specs = buildChartSpecs(displayData);
         Object.entries(specs).forEach(([key, spec]) => {
             const ref = charts[key];
             if (!ref?.current) return;
@@ -1088,12 +1271,117 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         })
         .filter((row) => row.p != null || row.b != null || row.diff != null);
 
-    const renderSection = (title, ref) => (
+    const weightsHoverPanel = weightsHover ? (
+        <Box
+            sx={{
+                position: isNarrow ? "static" : "absolute",
+                top: isNarrow ? "auto" : 12,
+                right: isNarrow ? "auto" : 12,
+                width: isNarrow ? "100%" : 164,
+                maxHeight: isNarrow ? "none" : 364,
+                overflowY: "auto",
+                mt: isNarrow ? 1 : 0,
+                px: 1.25,
+                py: 0.875,
+                borderRadius: 1.5,
+                backgroundColor: alpha(theme.palette.background.default, 0.9),
+                border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
+                backdropFilter: "blur(10px)",
+                pointerEvents: "auto",
+                zIndex: 2,
+            }}
+        >
+            <Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: 0.75 }}>
+                {formatHoverDate(weightsHover.date)}
+                {weightsPinnedDate === weightsHover.date ? " • Pinned" : ""}
+            </Typography>
+            <Stack direction="row" spacing={0.4} sx={{ mb: 0.55 }}>
+                {["weight", "stack"].map((mode) => {
+                    const active = weightsHoverSort === mode;
+                    return (
+                        <Button
+                            key={mode}
+                            size="small"
+                            variant="text"
+                            onClick={() => setWeightsHoverSort(mode)}
+                            sx={{
+                                minWidth: 0,
+                                px: 0.55,
+                                py: 0.1,
+                                minHeight: 20,
+                                borderRadius: 999,
+                                fontSize: "0.62rem",
+                                fontWeight: active ? 700 : 500,
+                                lineHeight: 1.1,
+                                letterSpacing: "0.02em",
+                                textTransform: "none",
+                                color: active ? theme.palette.primary.main : theme.palette.text.secondary,
+                                backgroundColor: active
+                                    ? alpha(theme.palette.primary.main, 0.14)
+                                    : "transparent",
+                                "&:hover": {
+                                    backgroundColor: active
+                                        ? alpha(theme.palette.primary.main, 0.2)
+                                        : alpha(theme.palette.text.primary, 0.06),
+                                },
+                            }}
+                        >
+                            {mode === "weight" ? "Weight" : "Stack"}
+                        </Button>
+                    );
+                })}
+            </Stack>
+            <Stack spacing={0.2}>
+                {displayWeightsHoverRows.map((row) => (
+                    <Box
+                        key={row.name}
+                        sx={{
+                            display: "grid",
+                            gridTemplateColumns: "10px 1fr auto",
+                            gap: 0.75,
+                            alignItems: "center",
+                            minWidth: 0,
+                        }}
+                    >
+                        <Box
+                            sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: 0.5,
+                                backgroundColor: row.color,
+                            }}
+                        />
+                        <Typography
+                            variant="caption"
+                            sx={{
+                                fontWeight: 500,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {row.name}
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                            {formatWeightPercent(row.value)}
+                        </Typography>
+                    </Box>
+                ))}
+            </Stack>
+        </Box>
+    ) : null;
+
+    const renderSection = (title, ref, options = {}) => (
         <div style={{ marginBottom: 48 }}>
             <Typography variant="h6" sx={{ mb: 1.5, fontWeight: 500 }}>
                 {title}
             </Typography>
-            <div ref={ref} style={{ width: "100%", height: 400 }} />
+            <Box ref={options.containerRef} sx={{ position: "relative", width: "100%" }}>
+                <div ref={ref} style={{ width: "100%", height: 400 }} />
+                {options.overlay}
+            </Box>
             <RangeSelector range={range} onChange={handleSetRange} theme={theme} />
             <Divider sx={{ mt: 4 }} />
         </div>
@@ -1118,7 +1406,10 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             {renderSection("Daily Alpha", charts.alphaDaily)}
             {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
             {renderSection("Cumulative Alpha", charts.alphaCum)}
-            {renderSection("Holdings Over Time (Weights)", charts.weights)}
+            {renderSection("Holdings Over Time (Weights)", charts.weights, {
+                overlay: weightsHoverPanel,
+                containerRef: weightsSectionRef,
+            })}
 
             <Box sx={{ mt: 8 }}>
                 <ReportFrame src={account.report} />
