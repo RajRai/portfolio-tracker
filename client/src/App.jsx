@@ -26,18 +26,7 @@ import ModelPortfolioToolPage from "./components/ModelPortfolioToolPage.jsx";
 import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
 import { deepClone } from "@mui/x-data-grid/internals";
-
-function umamiTrack(eventName, data) {
-    // Umami is typically exposed as window.umami.track(...)
-    // Make this a no-op if Umami isn't loaded (e.g., dev).
-    try {
-        if (typeof window !== "undefined" && window.umami && typeof window.umami.track === "function") {
-            window.umami.track(eventName, data);
-        }
-    } catch {
-        // ignore
-    }
-}
+import { trackToolEvent, umamiTrack } from "./umami.js";
 
 const toNum = (v) => {
     if (v == null) return NaN;
@@ -214,6 +203,20 @@ export default function App() {
         window.addEventListener("popstate", onPopState);
         return () => window.removeEventListener("popstate", onPopState);
     }, []);
+
+    useEffect(() => {
+        const toolNameByPage = {
+            marketCap: "market_cap_weights",
+            earnings: "earnings_calendar",
+            modelPortfolio: "portfolio_backsimulator",
+        };
+        const toolName = toolNameByPage[page];
+        if (!toolName) return;
+
+        trackToolEvent(toolName, "viewed", {
+            path: window.location.pathname,
+        });
+    }, [page]);
 
     const navigateTo = (nextPage) => {
         const nextPath = TOOL_PATHS[nextPage] || TOOL_PATHS.home;

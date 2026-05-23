@@ -5,16 +5,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import CSVTable from "./CSVTable.jsx";
 import PlotlyDashboard from "./PlotlyDashboard.jsx";
 import PortfolioAbout from "./PortfolioAbout.jsx";
-
-function umamiTrack(eventName, data) {
-    try {
-        if (typeof window !== "undefined" && window.umami && typeof window.umami.track === "function") {
-            window.umami.track(eventName, data);
-        }
-    } catch {
-        // ignore
-    }
-}
+import { umamiTrack } from "../umami.js";
 
 function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator = null }) {
     const [tab, setTab] = useState("analytics");

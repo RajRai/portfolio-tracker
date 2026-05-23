@@ -18,6 +18,7 @@ import {
     Typography,
 } from "@mui/material";
 import { SourcePicker, formatPercent, postJson, splitTickers } from "./toolsShared.jsx";
+import { serializeQuery, serializeTickerList, trackToolEvent } from "../umami.js";
 
 const todayString = () => new Date().toISOString().slice(0, 10);
 
@@ -348,6 +349,7 @@ function EarningsResults({ data }) {
 
 export default function StockToolsPage({ tool, accounts }) {
     const isEarnings = tool === "earnings";
+    const toolEventName = isEarnings ? "earnings_calendar" : "market_cap_weights";
     const [accountId, setAccountId] = useState(accounts[0]?.id || "");
     const [tickers, setTickers] = useState([]);
     const [sourceHoldings, setSourceHoldings] = useState([]);
@@ -367,24 +369,72 @@ export default function StockToolsPage({ tool, accounts }) {
         }
     }, [accountId, accounts]);
 
+    const buildSourceQuery = () => ({
+        sourceType: "portfolio",
+        accountId,
+    });
+
+    const buildToolQuery = () => (
+        isEarnings
+            ? {
+                tickers,
+                start: startDate,
+                end: endDate,
+            }
+            : {
+                tickers,
+            }
+    );
+
+    const buildToolEventData = (query) => ({
+        selected_account_id: accountId || null,
+        has_loaded_source: Boolean(sourceSummary),
+        source_label: sourceSummary?.label || null,
+        source_weight_mode: sourceSummary?.weightSource || null,
+        query: serializeQuery(query),
+        query_source_type: "portfolio",
+        query_account_id: accountId || null,
+        query_tickers: serializeTickerList(query?.tickers || []),
+        query_ticker_count: (query?.tickers || []).length,
+        ...(isEarnings ? {
+            query_start_date: query?.start || null,
+            query_end_date: query?.end || null,
+        } : {}),
+    });
+
     const loadSource = async () => {
         setError("");
         setWarnings([]);
         setLoadingSource(true);
         setMarketCapData(null);
         setEarningsData(null);
+        const sourceQuery = buildSourceQuery();
 
         try {
-            const payload = await postJson("/api/tools/stock-source", {
-                sourceType: "portfolio",
-                accountId,
-            });
+            const payload = await postJson("/api/tools/stock-source", sourceQuery);
             setTickers(payload.tickers || []);
             setSourceHoldings(payload.holdings || []);
             setSourceSummary(payload.source || null);
             setWarnings(payload.warnings || []);
+            trackToolEvent(toolEventName, "source_loaded", {
+                query: serializeQuery(sourceQuery),
+                query_source_type: sourceQuery.sourceType,
+                query_account_id: sourceQuery.accountId || null,
+                selected_account_id: accountId || null,
+                loaded_tickers: serializeTickerList(payload.tickers || []),
+                ticker_count: (payload.tickers || []).length,
+                warnings_count: (payload.warnings || []).length,
+                source_weight_mode: payload.source?.weightSource || "current",
+            });
         } catch (err) {
             setError(err.message);
+            trackToolEvent(toolEventName, "source_load_failed", {
+                query: serializeQuery(sourceQuery),
+                query_source_type: sourceQuery.sourceType,
+                query_account_id: sourceQuery.accountId || null,
+                selected_account_id: accountId || null,
+                error: err.message,
+            });
         } finally {
             setLoadingSource(false);
         }
@@ -394,23 +444,40 @@ export default function StockToolsPage({ tool, accounts }) {
         setError("");
         setWarnings([]);
         setLoadingResults(true);
+        const toolQuery = buildToolQuery();
+        const baseEventData = buildToolEventData(toolQuery);
+
+        trackToolEvent(toolEventName, "run_started", {
+            ...baseEventData,
+        });
 
         try {
             if (isEarnings) {
-                const payload = await postJson("/api/tools/earnings-calendar", {
-                    tickers,
-                    start: startDate,
-                    end: endDate,
-                });
+                const payload = await postJson("/api/tools/earnings-calendar", toolQuery);
                 setEarningsData(payload);
                 setWarnings(payload.warnings || []);
+                trackToolEvent(toolEventName, "run_completed", {
+                    ...baseEventData,
+                    event_count: (payload.events || []).length,
+                    warnings_count: (payload.warnings || []).length,
+                });
             } else {
-                const payload = await postJson("/api/tools/market-cap-weights", { tickers });
+                const payload = await postJson("/api/tools/market-cap-weights", toolQuery);
                 setMarketCapData(payload);
                 setWarnings(payload.warnings || []);
+                trackToolEvent(toolEventName, "run_completed", {
+                    ...baseEventData,
+                    row_count: (payload.rows || []).length,
+                    market_cap_count: (payload.rows || []).filter((row) => Boolean(row.market_cap)).length,
+                    warnings_count: (payload.warnings || []).length,
+                });
             }
         } catch (err) {
             setError(err.message);
+            trackToolEvent(toolEventName, "run_failed", {
+                ...baseEventData,
+                error: err.message,
+            });
         } finally {
             setLoadingResults(false);
         }

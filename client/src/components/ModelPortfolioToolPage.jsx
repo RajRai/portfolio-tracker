@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import AccountTabs from "./AccountTabs.jsx";
 import { SourcePicker, formatPercent, normalizeTicker, postJson } from "./toolsShared.jsx";
+import { serializeHoldings, serializeQuery, serializeTickerList, trackToolEvent } from "../umami.js";
 
 const rollWeekendBack = (date) => {
     const next = new Date(date);
@@ -42,6 +43,7 @@ const scopeLabel = (scope) =>
     scope === "both" ? "Both" : scope === "benchmark" ? "Benchmark" : "Portfolio";
 
 const TOOL_TITLE = "Portfolio Backsimulator";
+const TOOL_EVENT_NAME = "portfolio_backsimulator";
 const DEFAULT_REPORT_NAME = "Portfolio Backsimulation";
 const MANUAL_WEIGHTS_HELPER_TEXT =
     "One holding per line. Examples: AAPL, AAPL 25, or MSFT 12.5. If you leave the number off, it defaults to 1.";
@@ -303,19 +305,49 @@ export default function ModelPortfolioToolPage({ accounts }) {
     };
 
     const loadSourceWeights = async (accountId, setter, summarySetter, loadingSetter, options = {}) => {
+        const scope = options.scope || "portfolio";
+        const inferHistoricalWeights = Boolean(options.inferHistoricalWeights);
+        const trigger = options.trigger || "manual";
+        const sourceQuery = {
+            sourceType: "portfolio",
+            accountId,
+            inferHistoricalWeights,
+        };
         loadingSetter(true);
         setError("");
         try {
-            const payload = await postJson("/api/tools/stock-source", {
-                sourceType: "portfolio",
-                accountId,
-                inferHistoricalWeights: Boolean(options.inferHistoricalWeights),
-            });
+            const payload = await postJson("/api/tools/stock-source", sourceQuery);
             setter(formatWeightsText(payload.holdings || []));
             summarySetter(payload.source || null);
+            trackToolEvent(TOOL_EVENT_NAME, "source_loaded", {
+                scope,
+                trigger,
+                query: serializeQuery(sourceQuery),
+                query_source_type: sourceQuery.sourceType,
+                query_account_id: sourceQuery.accountId || null,
+                query_infer_historical_weights: sourceQuery.inferHistoricalWeights,
+                selected_account_id: accountId || null,
+                infer_historical_weights: inferHistoricalWeights,
+                loaded_tickers: serializeTickerList((payload.holdings || []).map((holding) => holding.ticker)),
+                holding_count: (payload.holdings || []).length,
+                warnings_count: (payload.warnings || []).length,
+                source_weight_mode: payload.source?.weightSource || "current",
+                has_history_window: Boolean(payload.source?.historyWindow),
+            });
             return payload;
         } catch (err) {
             setError(err.message);
+            trackToolEvent(TOOL_EVENT_NAME, "source_load_failed", {
+                scope,
+                trigger,
+                query: serializeQuery(sourceQuery),
+                query_source_type: sourceQuery.sourceType,
+                query_account_id: sourceQuery.accountId || null,
+                query_infer_historical_weights: sourceQuery.inferHistoricalWeights,
+                selected_account_id: accountId || null,
+                infer_historical_weights: inferHistoricalWeights,
+                error: err.message,
+            });
             return null;
         } finally {
             loadingSetter(false);
@@ -329,7 +361,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             setPortfolioWeightsText,
             setPortfolioSourceSummary,
             setLoadingPortfolioSource,
-            { inferHistoricalWeights }
+            { inferHistoricalWeights, scope: "portfolio" }
         );
         setPortfolioWeightHistory(
             inferHistoricalWeights && Array.isArray(payload?.weightHistory)
@@ -346,7 +378,7 @@ export default function ModelPortfolioToolPage({ accounts }) {
             setBenchmarkWeightsText,
             setBenchmarkSourceSummary,
             setLoadingBenchmarkSource,
-            { inferHistoricalWeights }
+            { inferHistoricalWeights, scope: "benchmark" }
         );
         setBenchmarkWeightHistory(
             inferHistoricalWeights && Array.isArray(payload?.weightHistory)
@@ -393,7 +425,11 @@ export default function ModelPortfolioToolPage({ accounts }) {
                 (value) => {
                     if (!cancelled) setLoadingPortfolioSource(value);
                 },
-                { inferHistoricalWeights: shouldUseHistoricalWeights }
+                {
+                    inferHistoricalWeights: shouldUseHistoricalWeights,
+                    scope: "portfolio",
+                    trigger: "prefill",
+                }
             );
             if (!cancelled) {
                 setPortfolioWeightHistory(
@@ -591,52 +627,108 @@ export default function ModelPortfolioToolPage({ accounts }) {
     };
 
     const generateReport = async () => {
+        const portfolioHoldings = portfolioParsed.rows.map((row) => ({
+            ticker: row.ticker,
+            weight: row.weight,
+        }));
+        const benchmarkPayload =
+            benchmarkMode === "ticker"
+                ? {
+                    mode: "ticker",
+                    ticker: normalizeTicker(benchmarkTicker),
+                }
+                : {
+                    mode: "portfolio",
+                    label:
+                        benchmarkMode === "existingPortfolio"
+                            ? benchmarkSourceSummary?.label || "Benchmark Portfolio"
+                            : "Custom Benchmark Portfolio",
+                    weightingMode: benchmarkUseMarketCapWeights ? "market_cap_start" : "manual",
+                    weightHistory: benchmarkHistoryActive ? benchmarkWeightHistory : null,
+                    historyWindow: benchmarkHistoryActive ? benchmarkHistoryWindow : null,
+                    holdings: benchmarkParsed.rows.map((row) => ({
+                        ticker: row.ticker,
+                        weight: row.weight,
+                    })),
+                };
+        const requestBody = {
+            reportName,
+            startDate,
+            endDate,
+            portfolioRebalancePeriod,
+            benchmarkRebalancePeriod,
+            weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
+            portfolioWeightHistory: portfolioInferWeightsFromHistory ? portfolioWeightHistory : null,
+            portfolioHistoryWindow: portfolioInferWeightsFromHistory ? portfolioHistoryWindow : null,
+            holdings: portfolioHoldings,
+            benchmark: benchmarkPayload,
+        };
+        const benchmarkHoldings = benchmarkPayload.mode === "portfolio" ? benchmarkPayload.holdings : [];
+        const runEventData = {
+            start_date: startDate,
+            end_date: endDate,
+            portfolio_holding_count: portfolioHoldings.length,
+            portfolio_rebalance_period: portfolioRebalancePeriod,
+            portfolio_uses_historical_weights: portfolioInferWeightsFromHistory,
+            portfolio_uses_market_cap_weights: portfolioUseMarketCapWeights,
+            benchmark_mode: benchmarkMode,
+            benchmark_holding_count: benchmarkMode === "ticker" ? 1 : benchmarkHoldings.length,
+            benchmark_rebalance_period: benchmarkRebalancePeriod,
+            benchmark_uses_historical_weights: benchmarkHistoryActive,
+            benchmark_uses_market_cap_weights: benchmarkNeedsWeights && benchmarkUseMarketCapWeights,
+            has_locked_history_window: anyHistoryActive,
+            query: serializeQuery(requestBody),
+            query_report_name: reportName,
+            query_start_date: startDate,
+            query_end_date: endDate,
+            query_portfolio_source_account_id: portfolioSourceAccountId || null,
+            query_portfolio_weighting_mode: requestBody.weightingMode,
+            query_portfolio_rebalance_period: portfolioRebalancePeriod,
+            query_portfolio_uses_historical_weights: portfolioInferWeightsFromHistory,
+            query_portfolio_uses_market_cap_weights: portfolioUseMarketCapWeights,
+            query_portfolio_tickers: serializeTickerList(portfolioHoldings.map((holding) => holding.ticker)),
+            query_portfolio_holdings: serializeHoldings(portfolioHoldings),
+            query_benchmark_mode: benchmarkPayload.mode,
+            query_benchmark_source_account_id:
+                benchmarkPayload.mode === "portfolio" ? benchmarkSourceAccountId || null : null,
+            query_benchmark_ticker: benchmarkPayload.mode === "ticker" ? benchmarkPayload.ticker : null,
+            query_benchmark_weighting_mode:
+                benchmarkPayload.mode === "portfolio" ? benchmarkPayload.weightingMode : null,
+            query_benchmark_rebalance_period:
+                benchmarkPayload.mode === "portfolio" ? benchmarkRebalancePeriod : null,
+            query_benchmark_uses_historical_weights: benchmarkHistoryActive,
+            query_benchmark_uses_market_cap_weights:
+                benchmarkPayload.mode === "portfolio" ? benchmarkUseMarketCapWeights : false,
+            query_benchmark_tickers: serializeTickerList(benchmarkHoldings.map((holding) => holding.ticker)),
+            query_benchmark_holdings: serializeHoldings(benchmarkHoldings),
+        };
+
         setLoadingReport(true);
         setError("");
         setWarnings([]);
         setViewerAccount(null);
         setRangeInfo(null);
 
+        trackToolEvent(TOOL_EVENT_NAME, "run_started", runEventData);
+
         try {
-            const payload = await postJson("/api/tools/model-portfolio-report", {
-                reportName,
-                startDate,
-                endDate,
-                portfolioRebalancePeriod,
-                benchmarkRebalancePeriod,
-                weightingMode: portfolioUseMarketCapWeights ? "market_cap_start" : "manual",
-                portfolioWeightHistory: portfolioInferWeightsFromHistory ? portfolioWeightHistory : null,
-                portfolioHistoryWindow: portfolioInferWeightsFromHistory ? portfolioHistoryWindow : null,
-                holdings: portfolioParsed.rows.map((row) => ({
-                    ticker: row.ticker,
-                    weight: row.weight,
-                })),
-                benchmark:
-                    benchmarkMode === "ticker"
-                        ? {
-                            mode: "ticker",
-                            ticker: normalizeTicker(benchmarkTicker),
-                        }
-                        : {
-                            mode: "portfolio",
-                            label:
-                                benchmarkMode === "existingPortfolio"
-                                    ? benchmarkSourceSummary?.label || "Benchmark Portfolio"
-                                    : "Custom Benchmark Portfolio",
-                            weightingMode: benchmarkUseMarketCapWeights ? "market_cap_start" : "manual",
-                            weightHistory: benchmarkHistoryActive ? benchmarkWeightHistory : null,
-                            historyWindow: benchmarkHistoryActive ? benchmarkHistoryWindow : null,
-                            holdings: benchmarkParsed.rows.map((row) => ({
-                                ticker: row.ticker,
-                                weight: row.weight,
-                            })),
-                        },
-            });
+            const payload = await postJson("/api/tools/model-portfolio-report", requestBody);
             setWarnings(payload.warnings || []);
             setViewerAccount(payload.account || null);
             setRangeInfo(payload.rangeInfo || null);
+            trackToolEvent(TOOL_EVENT_NAME, "run_completed", {
+                ...runEventData,
+                warnings_count: (payload.warnings || []).length,
+                effective_start_date: payload.rangeInfo?.effectiveStartDate || null,
+                effective_end_date: payload.rangeInfo?.effectiveEndDate || null,
+                generated_account_id: payload.account?.id || null,
+            });
         } catch (err) {
             setError(err.message);
+            trackToolEvent(TOOL_EVENT_NAME, "run_failed", {
+                ...runEventData,
+                error: err.message,
+            });
         } finally {
             setLoadingReport(false);
         }
