@@ -554,6 +554,13 @@ def _upsert_accounts_index_entry(
     )
 
 
+def _load_generated_accounts_index(index_path: Path, full_rebuild: bool) -> list[dict]:
+    if full_rebuild or not index_path.exists():
+        return []
+    with open(index_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main():
     # ============================================================
     #  1. Configuration
@@ -573,9 +580,15 @@ def main():
 
     # You can override with command-line arguments like:
     # python analyze_portfolio.py REDACTED REDACTED
+    full_rebuild = len(sys.argv) == 1
     if len(sys.argv) > 1:
         account_ids = sys.argv[1:]
         accounts = [a for a in accounts if a["id"] in account_ids]
+
+    out_dir = BASE_DIR / "out"
+    out_dir.mkdir(exist_ok=True)
+    index_path = out_dir / "accounts.json"
+    accounts_list = _load_generated_accounts_index(index_path, full_rebuild)
 
     # ============================================================
     #  Process each account
@@ -742,8 +755,6 @@ def main():
         #  5. QuantStats report generation
         # ============================================================
 
-        out_dir = BASE_DIR / "out"
-        out_dir.mkdir(exist_ok=True)
         out_path = out_dir / f"report_{i}.html"
 
         spy_df = all_prices[[BENCHMARK]]
@@ -919,12 +930,6 @@ def main():
             "trades": f"/data/trades_{i}.csv",
         }
 
-        index_path = out_dir / "accounts.json"
-        if index_path.exists():
-            with open(index_path, "r", encoding="utf-8") as f:
-                accounts_list = json.load(f)
-        else:
-            accounts_list = []
         accounts_list = _upsert_accounts_index_entry(accounts_list, accounts_entry, all_accounts)
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(accounts_list, f, indent=2)

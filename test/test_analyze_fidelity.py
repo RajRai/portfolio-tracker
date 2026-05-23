@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 import pytest
 
@@ -10,6 +12,7 @@ from src.reports.analyze_fidelity import (
     _fetch_polygon_prices_with_minimum_history,
     _holding_today_gl_series,
     _is_invalid_sell_post_quantity,
+    _load_generated_accounts_index,
     _statement_cash_income_series,
     _write_quantstats_report,
     _upsert_accounts_index_entry,
@@ -147,6 +150,22 @@ def test_upsert_accounts_index_entry_restores_canonical_account_order():
 
     assert [account["id"] for account in ordered_accounts] == ["OPTICAL", "CLOUD", "RETIREMENT"]
     assert ordered_accounts[-1]["report"] == "/reports/report_9.html"
+
+
+def test_load_generated_accounts_index_drops_stale_entries_on_full_rebuild(tmp_path):
+    index_path = tmp_path / "accounts.json"
+    index_path.write_text(
+        json.dumps(
+            [
+                {"id": "OPTICAL", "name": "Optical Computing", "report": "/reports/report_0.html"},
+                {"id": "LEGACY_OPTICAL", "name": "Optical Computing", "report": "/reports/report_1.html"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_generated_accounts_index(index_path, full_rebuild=True) == []
+    assert _load_generated_accounts_index(index_path, full_rebuild=False)[1]["id"] == "LEGACY_OPTICAL"
 
 
 def test_statement_cash_income_series_excludes_reinvestments():
