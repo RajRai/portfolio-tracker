@@ -57,6 +57,25 @@ const REBALANCE_PERIOD_OPTIONS = [
     { value: "quarterly", label: "Quarterly" },
 ];
 
+function RangeLimitPill({ label, active }) {
+    return (
+        <Box
+            sx={{
+                px: 1,
+                py: 0.5,
+                borderRadius: 999,
+                bgcolor: active ? "primary.main" : "action.hover",
+                color: active ? "primary.contrastText" : "text.secondary",
+                fontSize: "0.75rem",
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+            }}
+        >
+            {label}: {active ? "Yes" : "No"}
+        </Box>
+    );
+}
+
 const formatWeightsText = (holdings) =>
     (holdings || [])
         .map((holding) => {
@@ -989,30 +1008,72 @@ export default function ModelPortfolioToolPage({ accounts }) {
                         </Typography>
                     )}
 
-                    <Table size="small">
-                        <TableHead>
-                            <TableRow>
-                                <TableCell>Ticker</TableCell>
-                                <TableCell>Scope</TableCell>
-                                <TableCell align="right">First Date</TableCell>
-                                <TableCell align="right">Last Date</TableCell>
-                                <TableCell align="center">Sets Start</TableCell>
-                                <TableCell align="center">Sets End</TableCell>
-                            </TableRow>
-                        </TableHead>
-                        <TableBody>
-                            {(rangeInfo.symbolRanges || []).map((row) => (
-                                <TableRow key={row.ticker}>
-                                    <TableCell>{row.ticker}</TableCell>
-                                    <TableCell>{scopeLabel(row.scope)}</TableCell>
-                                    <TableCell align="right">{row.firstDate || "\u2014"}</TableCell>
-                                    <TableCell align="right">{row.lastDate || "\u2014"}</TableCell>
-                                    <TableCell align="center">{row.limitsStart ? "Yes" : ""}</TableCell>
-                                    <TableCell align="center">{row.limitsEnd ? "Yes" : ""}</TableCell>
+                    <Stack spacing={1} sx={{ display: { xs: "flex", md: "none" } }}>
+                        {(rangeInfo.symbolRanges || []).map((row) => (
+                            <Box
+                                key={row.ticker}
+                                sx={{
+                                    border: (theme) => `1px solid ${theme.palette.divider}`,
+                                    borderRadius: 2,
+                                    p: 1.25,
+                                }}
+                            >
+                                <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                        {row.ticker}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        {scopeLabel(row.scope)}
+                                    </Typography>
+                                </Stack>
+                                <Stack spacing={0.75} sx={{ mt: 1 }}>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">
+                                            First available
+                                        </Typography>
+                                        <Typography variant="body2">{row.firstDate || "\u2014"}</Typography>
+                                    </Box>
+                                    <Box>
+                                        <Typography variant="caption" color="text.secondary">
+                                            Last available
+                                        </Typography>
+                                        <Typography variant="body2">{row.lastDate || "\u2014"}</Typography>
+                                    </Box>
+                                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ pt: 0.25 }}>
+                                        <RangeLimitPill label="Sets start" active={row.limitsStart} />
+                                        <RangeLimitPill label="Sets end" active={row.limitsEnd} />
+                                    </Stack>
+                                </Stack>
+                            </Box>
+                        ))}
+                    </Stack>
+
+                    <Box sx={{ display: { xs: "none", md: "block" }, overflowX: "auto" }}>
+                        <Table size="small" sx={{ minWidth: 720 }}>
+                            <TableHead>
+                                <TableRow>
+                                    <TableCell>Ticker</TableCell>
+                                    <TableCell>Scope</TableCell>
+                                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>First Date</TableCell>
+                                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>Last Date</TableCell>
+                                    <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>Sets Start</TableCell>
+                                    <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>Sets End</TableCell>
                                 </TableRow>
-                            ))}
-                        </TableBody>
-                    </Table>
+                            </TableHead>
+                            <TableBody>
+                                {(rangeInfo.symbolRanges || []).map((row) => (
+                                    <TableRow key={row.ticker}>
+                                        <TableCell>{row.ticker}</TableCell>
+                                        <TableCell>{scopeLabel(row.scope)}</TableCell>
+                                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{row.firstDate || "\u2014"}</TableCell>
+                                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{row.lastDate || "\u2014"}</TableCell>
+                                        <TableCell align="center">{row.limitsStart ? "Yes" : ""}</TableCell>
+                                        <TableCell align="center">{row.limitsEnd ? "Yes" : ""}</TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </Box>
                 </Paper>
             )}
 

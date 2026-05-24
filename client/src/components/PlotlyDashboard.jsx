@@ -255,6 +255,23 @@ const formatHoverDate = (dateText) => {
 
 const formatWeightPercent = (value) => `${(value * 100).toFixed(1)}%`;
 
+const getClientPoint = (event) => {
+    const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+    if (touch) {
+        return {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+        };
+    }
+    if (Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)) {
+        return {
+            clientX: event.clientX,
+            clientY: event.clientY,
+        };
+    }
+    return null;
+};
+
 const nearestTimestampIndex = (sortedValues, target) => {
     if (!sortedValues.length || !Number.isFinite(target)) return -1;
     if (target <= sortedValues[0]) return 0;
@@ -278,6 +295,38 @@ const nearestTimestampIndex = (sortedValues, target) => {
     return Math.abs(prev - target) <= Math.abs(next - target)
         ? Math.max(0, hi)
         : Math.min(sortedValues.length - 1, lo);
+};
+
+const buildWeightsHoverStateFromData = (weightsHoverData, hoverDate) => {
+    if (!hoverDate) return null;
+    const rows = (weightsHoverData?.series || [])
+        .slice()
+        .reverse()
+        .map((series) => {
+            const value = series.valuesByDate.get(hoverDate);
+            if (value == null || value <= 0.0005) return null;
+            return {
+                name: series.name,
+                color: series.color,
+                value,
+            };
+        })
+        .filter(Boolean);
+    return rows.length ? { date: hoverDate, rows } : null;
+};
+
+const weightsHoverStateEquals = (left, right) => {
+    if (left === right) return true;
+    if (!left || !right) return false;
+    if (left.date !== right.date) return false;
+    if ((left.rows || []).length !== (right.rows || []).length) return false;
+    return left.rows.every((row, index) => {
+        const other = right.rows[index];
+        return other &&
+            row.name === other.name &&
+            row.color === other.color &&
+            row.value === other.value;
+    });
 };
 
 const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
@@ -579,14 +628,19 @@ const RangeSelector = memo(({ range, onChange, theme }) => (
 export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange }) {
     const theme = useTheme();
     const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
+    const hasHoverPointer = useMediaQuery("(any-hover: hover) and (any-pointer: fine)");
     const [data, setData] = useState(null);
     const [range, setRange] = useState("all");
     const [Plotly, setPlotly] = useState(null);
     const [liveInputs, setLiveInputs] = useState(null);
     const [weightsHover, setWeightsHover] = useState(null);
     const [weightsPinnedDate, setWeightsPinnedDate] = useState(null);
+    const [weightsSelectionMarker, setWeightsSelectionMarker] = useState(null);
+    const [weightsTouchMode, setWeightsTouchMode] = useState(false);
     const [weightsHoverSort, setWeightsHoverSort] = useState("weight");
     const weightsSectionRef = useRef(null);
+    const suppressNextWeightsClickUntilRef = useRef(0);
+    const lastTouchWeightsHoverRef = useRef(null);
     const liveSnapshot = useSyncExternalStore(
         liveStore?.subscribe || (() => () => {}),
         liveStore?.getSnapshot || (() => EMPTY_LIVE_SNAPSHOT),
@@ -750,6 +804,18 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         [displayData?.weights]
     );
     const headerText = buildCompactLiveLabel(liveInputs?.tickers || [], liveSnapshot);
+    const usePersistentWeightsSelection = !hasHoverPointer || weightsTouchMode;
+    const weightsMarkerDate = useMemo(
+        () =>
+            usePersistentWeightsSelection
+                ? (weightsHover?.date || null)
+                : weightsPinnedDate,
+        [
+            usePersistentWeightsSelection,
+            weightsHover?.date,
+            weightsPinnedDate,
+        ]
+    );
 
     // ✅ MINIMAL CHANGE: resize Plotly charts on window size changes
     useEffect(() => {
@@ -779,23 +845,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
         const plot = charts.weights.current;
         const wrapper = weightsSectionRef.current;
-        const buildWeightsHoverState = (hoverDate) => {
-            if (!hoverDate) return null;
-            const rows = weightsHoverData.series
-                .slice()
-                .reverse()
-                .map((series) => {
-                    const value = series.valuesByDate.get(hoverDate);
-                    if (value == null || value <= 0.0005) return null;
-                    return {
-                        name: series.name,
-                        color: series.color,
-                        value,
-                    };
-                })
-                .filter(Boolean);
-            return rows.length ? { date: hoverDate, rows } : null;
-        };
+        const buildWeightsHoverState = (hoverDate) =>
+            buildWeightsHoverStateFromData(weightsHoverData, hoverDate);
 
         const readHoverStateFromEvent = (event) => {
             const layout = plot._fullLayout;
@@ -805,9 +856,12 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 return null;
             }
 
+            const point = getClientPoint(event);
+            if (!point) return null;
+
             const rect = plot.getBoundingClientRect();
-            const offsetX = event.clientX - rect.left - xaxis._offset;
-            const offsetY = event.clientY - rect.top - yaxis._offset;
+            const offsetX = point.clientX - rect.left - xaxis._offset;
+            const offsetY = point.clientY - rect.top - yaxis._offset;
             if (
                 !Number.isFinite(offsetX) ||
                 !Number.isFinite(offsetY) ||
@@ -831,9 +885,12 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             return buildWeightsHoverState(weightsHoverData.dates[dateIndex]);
         };
 
-        const handleMove = (event) => {
+        const setHoverFromEvent = (event, fallbackOverride = null) => {
             const next = readHoverStateFromEvent(event);
-            const fallback = weightsPinnedDate ? buildWeightsHoverState(weightsPinnedDate) : null;
+            const fallback = fallbackOverride ??
+                (hasHoverPointer && weightsPinnedDate
+                    ? buildWeightsHoverState(weightsPinnedDate)
+                    : null);
             setWeightsHover((current) => {
                 if (!next) {
                     if (!fallback) return null;
@@ -845,7 +902,21 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             });
         };
 
+        const handleMove = (event) => {
+            if (weightsTouchMode) {
+                setWeightsTouchMode(false);
+            }
+            setHoverFromEvent(event);
+        };
+
         const handleClick = (event) => {
+            if (weightsTouchMode) {
+                setWeightsTouchMode(false);
+            }
+            if (!hasHoverPointer) return;
+            if (Date.now() < suppressNextWeightsClickUntilRef.current) {
+                return;
+            }
             const next = readHoverStateFromEvent(event);
             if (!next) return;
             setWeightsPinnedDate((current) => (current === next.date ? null : next.date));
@@ -853,24 +924,168 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleLeave = () => {
-            setWeightsHover(weightsPinnedDate ? buildWeightsHoverState(weightsPinnedDate) : null);
+            setWeightsHover(
+                hasHoverPointer && weightsPinnedDate
+                    ? buildWeightsHoverState(weightsPinnedDate)
+                    : null
+            );
         };
 
+        const handleTouchStart = (event) => {
+            if (!weightsTouchMode) {
+                setWeightsTouchMode(true);
+            }
+            const next = readHoverStateFromEvent(event);
+            if (next) {
+                lastTouchWeightsHoverRef.current = next;
+            }
+            setHoverFromEvent(event, lastTouchWeightsHoverRef.current);
+        };
+
+        const handleTouchMove = (event) => {
+            const next = readHoverStateFromEvent(event);
+            if (next) {
+                lastTouchWeightsHoverRef.current = next;
+            }
+            setHoverFromEvent(event, lastTouchWeightsHoverRef.current);
+        };
+
+        const handleTouchEnd = (event) => {
+            const next = readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current;
+            suppressNextWeightsClickUntilRef.current = Date.now() + 750;
+            lastTouchWeightsHoverRef.current = null;
+            if (!next) {
+                handleLeave();
+                return;
+            }
+            if (hasHoverPointer && !weightsTouchMode) {
+                setWeightsPinnedDate((current) => (current === next.date ? null : next.date));
+            } else {
+                setWeightsPinnedDate(null);
+            }
+            setWeightsHover(next);
+        };
+
+        const handleTouchCancel = () => {
+            lastTouchWeightsHoverRef.current = null;
+            handleLeave();
+        };
+
+        const touchListenerOptions = { passive: true, capture: true };
         wrapper.addEventListener("mousemove", handleMove);
         wrapper.addEventListener("click", handleClick);
         wrapper.addEventListener("mouseleave", handleLeave);
+        wrapper.addEventListener("touchstart", handleTouchStart, touchListenerOptions);
+        wrapper.addEventListener("touchmove", handleTouchMove, touchListenerOptions);
+        wrapper.addEventListener("touchend", handleTouchEnd, touchListenerOptions);
+        wrapper.addEventListener("touchcancel", handleTouchCancel, touchListenerOptions);
 
         return () => {
             wrapper.removeEventListener("mousemove", handleMove);
             wrapper.removeEventListener("click", handleClick);
             wrapper.removeEventListener("mouseleave", handleLeave);
+            wrapper.removeEventListener("touchstart", handleTouchStart, touchListenerOptions);
+            wrapper.removeEventListener("touchmove", handleTouchMove, touchListenerOptions);
+            wrapper.removeEventListener("touchend", handleTouchEnd, touchListenerOptions);
+            wrapper.removeEventListener("touchcancel", handleTouchCancel, touchListenerOptions);
         };
-    }, [charts, weightsHoverData, weightsPinnedDate]);
+    }, [
+        charts,
+        hasHoverPointer,
+        weightsHoverData,
+        weightsPinnedDate,
+        weightsTouchMode,
+    ]);
 
     useEffect(() => {
-        setWeightsHover(null);
+        if (!charts.weights.current || !weightsMarkerDate) {
+            setWeightsSelectionMarker(null);
+            return undefined;
+        }
+
+        const plot = charts.weights.current;
+        const updateWeightsSelectionMarker = () => {
+            const layout = plot._fullLayout;
+            const xaxis = layout?.xaxis;
+            const yaxis = layout?.yaxis;
+            if (!xaxis || !yaxis || !Array.isArray(xaxis.range)) {
+                setWeightsSelectionMarker(null);
+                return;
+            }
+
+            const rangeStart = Date.parse(String(xaxis.range[0]));
+            const rangeEnd = Date.parse(String(xaxis.range[1]));
+            const selectionTs = Date.parse(`${weightsMarkerDate}T00:00:00`);
+            if (
+                !Number.isFinite(rangeStart) ||
+                !Number.isFinite(rangeEnd) ||
+                !Number.isFinite(selectionTs) ||
+                rangeEnd <= rangeStart
+            ) {
+                setWeightsSelectionMarker(null);
+                return;
+            }
+
+            const ratio = (selectionTs - rangeStart) / (rangeEnd - rangeStart);
+            if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+                setWeightsSelectionMarker(null);
+                return;
+            }
+
+            setWeightsSelectionMarker({
+                height: yaxis._length,
+                left: xaxis._offset + ratio * xaxis._length,
+                top: yaxis._offset,
+            });
+        };
+
+        updateWeightsSelectionMarker();
+        if (typeof plot.on === "function") {
+            plot.on("plotly_afterplot", updateWeightsSelectionMarker);
+            plot.on("plotly_relayout", updateWeightsSelectionMarker);
+        }
+
+        return () => {
+            if (typeof plot.removeListener === "function") {
+                plot.removeListener("plotly_afterplot", updateWeightsSelectionMarker);
+                plot.removeListener("plotly_relayout", updateWeightsSelectionMarker);
+            }
+        };
+    }, [charts, weightsMarkerDate]);
+
+    useEffect(() => {
         setWeightsPinnedDate(null);
-    }, [account?.id, range, displayData?.weights]);
+        setWeightsHover(null);
+        setWeightsSelectionMarker(null);
+    }, [account?.id, range]);
+
+    useEffect(() => {
+        const hasDate = (date) => Boolean(date && weightsHoverData.dates.includes(date));
+        let nextPinnedDate = weightsPinnedDate;
+
+        if (nextPinnedDate && !hasDate(nextPinnedDate)) {
+            nextPinnedDate = null;
+            setWeightsPinnedDate(null);
+        }
+
+        const nextHoverDate = usePersistentWeightsSelection
+            ? (hasDate(weightsHover?.date) ? weightsHover.date : null)
+            : nextPinnedDate
+                ? nextPinnedDate
+                : hasDate(weightsHover?.date)
+                    ? weightsHover.date
+                    : null;
+
+        const nextHover = buildWeightsHoverStateFromData(weightsHoverData, nextHoverDate);
+        setWeightsHover((current) => (
+            weightsHoverStateEquals(current, nextHover) ? current : nextHover
+        ));
+    }, [
+        usePersistentWeightsSelection,
+        weightsHover?.date,
+        weightsHoverData,
+        weightsPinnedDate,
+    ]);
 
     const displayWeightsHoverRows = useMemo(() => {
         if (!weightsHover?.rows?.length) return [];
@@ -1271,6 +1486,24 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         })
         .filter((row) => row.p != null || row.b != null || row.diff != null);
 
+    const weightsSelectionLine = weightsSelectionMarker ? (
+        <Box
+            sx={{
+                position: "absolute",
+                top: weightsSelectionMarker.top,
+                left: weightsSelectionMarker.left,
+                width: 2,
+                height: weightsSelectionMarker.height,
+                transform: "translateX(-1px)",
+                borderRadius: 999,
+                backgroundColor: alpha(theme.palette.common.white, 0.92),
+                boxShadow: `0 0 0 1px ${alpha(theme.palette.common.black, 0.16)}`,
+                pointerEvents: "none",
+                zIndex: 1,
+            }}
+        />
+    ) : null;
+
     const weightsHoverPanel = weightsHover ? (
         <Box
             sx={{
@@ -1294,7 +1527,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         >
             <Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: 0.75 }}>
                 {formatHoverDate(weightsHover.date)}
-                {weightsPinnedDate === weightsHover.date ? " • Pinned" : ""}
+                {hasHoverPointer && !weightsTouchMode && weightsPinnedDate === weightsHover.date
+                    ? " • Pinned"
+                    : ""}
             </Typography>
             <Stack direction="row" spacing={0.4} sx={{ mb: 0.55 }}>
                 {["weight", "stack"].map((mode) => {
@@ -1407,7 +1642,12 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
             {renderSection("Cumulative Alpha", charts.alphaCum)}
             {renderSection("Holdings Over Time (Weights)", charts.weights, {
-                overlay: weightsHoverPanel,
+                overlay: (
+                    <>
+                        {weightsSelectionLine}
+                        {weightsHoverPanel}
+                    </>
+                ),
                 containerRef: weightsSectionRef,
             })}
 

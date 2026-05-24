@@ -333,6 +333,75 @@ def _statement_cash_income_series(df: pd.DataFrame, price_index: pd.Index) -> pd
     return income_series
 
 
+def _build_position_trade_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
+    mask = df["Action"].str.contains(r"YOU (?:BOUGHT|SOLD)", flags=re.I, na=False)
+    trades = df[mask].copy()
+    reinvest_mask = (
+        df["Action"].str.contains(r"REINVEST", flags=re.I, na=False)
+        & pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).abs().gt(SHARE_EPSILON)
+        & pd.to_numeric(df["Price"], errors="coerce").notna()
+    )
+    reinvestments = df[reinvest_mask].copy()
+
+    def parse_side(x):
+        if re.search("BOUGHT", x, re.I):
+            return "BUY"
+        elif re.search("SOLD", x, re.I):
+            return "SELL"
+        return None
+
+    trades["side"] = trades["Action"].apply(parse_side)
+    trades["symbol"] = trades["Symbol"].fillna("").str.strip()
+    trades["quantity"] = pd.to_numeric(trades["Quantity"], errors="coerce").fillna(0.0)
+    trades["price"] = pd.to_numeric(trades["Price"], errors="coerce").fillna(0.0)
+    trades["amount"] = pd.to_numeric(trades["Amount"], errors="coerce").fillna(0.0)
+    trades = trades[["Run Date", "symbol", "side", "quantity", "price", "amount"]]
+
+    reinvestment_count = 0
+    if not reinvestments.empty:
+        reinvestments["Run Date"] = pd.to_datetime(reinvestments["Run Date"])
+        reinvestments["side"] = "BUY"
+        reinvestments["symbol"] = reinvestments["Symbol"].fillna("").str.strip()
+        reinvestments["quantity"] = pd.to_numeric(reinvestments["Quantity"], errors="coerce").fillna(0.0)
+        reinvestments["price"] = pd.to_numeric(reinvestments["Price"], errors="coerce").fillna(0.0)
+        reinvestments["amount"] = pd.to_numeric(reinvestments["Amount"], errors="coerce").fillna(0.0)
+        reinvestments = reinvestments[["Run Date", "symbol", "side", "quantity", "price", "amount"]]
+        reinvestment_count = len(reinvestments)
+
+    # Fidelity stock splits can show up as `DISTRIBUTION ...` rows with `Type=Shares`.
+    # Historical split factors already adjust quantities, so counting those rows as buys
+    # creates phantom holdings that prevent portfolios from ever going flat again.
+    distribution_mask = (
+        df["Action"].str.contains(r"DIVIDEND|INTEREST|REINVEST", flags=re.I, na=False)
+        & df["Type"].fillna("").str.contains("Shares", case=False, na=False)
+    )
+    distributions = df[distribution_mask].copy()
+
+    distribution_count = 0
+    if not distributions.empty:
+        distributions["Run Date"] = pd.to_datetime(distributions["Run Date"])
+        distributions["side"] = "BUY"
+        distributions["symbol"] = distributions["Symbol"].fillna("").str.strip()
+        distributions["price"] = 0.0
+        distributions["amount"] = 0.0
+        distributions["quantity"] = pd.to_numeric(distributions["Quantity"], errors="coerce").fillna(0.0)
+        distributions = distributions[["Run Date", "symbol", "side", "quantity", "price", "amount"]]
+        distribution_count = len(distributions)
+
+    trade_frames = [trades]
+    if reinvestment_count:
+        trade_frames.append(reinvestments)
+    if distribution_count:
+        trade_frames.append(distributions)
+
+    combined = (
+        pd.concat(trade_frames, ignore_index=True)
+        .sort_values("Run Date")
+        .reset_index(drop=True)
+    )
+    return combined, reinvestment_count, distribution_count
+
+
 def _apply_future_split_adjustments(trades: pd.DataFrame, split_events_by_symbol: dict[str, list[dict]]) -> pd.DataFrame:
     if trades.empty:
         return trades
@@ -623,65 +692,11 @@ def main():
         #  2. Parse trades
         # ============================================================
 
-        mask = df["Action"].str.contains(r"YOU (?:BOUGHT|SOLD)", flags=re.I, na=False)
-        trades = df[mask].copy()
-        reinvest_mask = (
-            df["Action"].str.contains(r"REINVEST", flags=re.I, na=False)
-            & pd.to_numeric(df["Quantity"], errors="coerce").fillna(0).abs().gt(SHARE_EPSILON)
-            & pd.to_numeric(df["Price"], errors="coerce").notna()
-        )
-        reinvestments = df[reinvest_mask].copy()
-
-        def parse_side(x):
-            if re.search("BOUGHT", x, re.I):
-                return "BUY"
-            elif re.search("SOLD", x, re.I):
-                return "SELL"
-            return None
-
-        trades["side"] = trades["Action"].apply(parse_side)
-        trades["symbol"] = trades["Symbol"].fillna("").str.strip()
-        trades["quantity"] = trades["Quantity"].astype(float)
-        trades["price"] = trades["Price"].astype(float)
-        trades["amount"] = trades["Amount"].astype(float)
-        trades = trades[["Run Date", "symbol", "side", "quantity", "price", "amount"]]
-
-        if not reinvestments.empty:
-            reinvestments["Run Date"] = pd.to_datetime(reinvestments["Run Date"])
-            reinvestments["side"] = "BUY"
-            reinvestments["symbol"] = reinvestments["Symbol"].fillna("").str.strip()
-            reinvestments["quantity"] = reinvestments["Quantity"].astype(float)
-            reinvestments["price"] = reinvestments["Price"].astype(float)
-            reinvestments["amount"] = reinvestments["Amount"].astype(float)
-            reinvestments = reinvestments[["Run Date", "symbol", "side", "quantity", "price", "amount"]]
-
-        # --- Detect distributions (dividends, interest, etc.) ---
-        dist_mask = (
-            df["Action"].str.contains(r"DIVIDEND|INTEREST|DISTRIBUTION|REINVEST", flags=re.I, na=False)
-            & df["Type"].str.contains("Shares")
-        )
-        distributions = df[dist_mask].copy()
-
-        trade_frames = [trades]
-        if not reinvestments.empty:
-            print(f"Detected {len(reinvestments)} reinvestments.")
-            trade_frames.append(reinvestments)
-
-        if not distributions.empty:
-            distributions["Run Date"] = pd.to_datetime(distributions["Run Date"])
-            distributions["side"] = "BUY"
-            distributions["symbol"] = distributions['Symbol']
-            distributions["price"] = 0.0
-            distributions["amount"] = 0.0
-            distributions['quantity'] = distributions['Quantity']
-            print(f"Detected {len(distributions)} distributions.")
-            trade_frames.append(distributions[["Run Date", "symbol", "side", "quantity", "price", "amount"]])
-
-        trades = (
-            pd.concat(trade_frames, ignore_index=True)
-            .sort_values("Run Date")
-            .reset_index(drop=True)
-        )
+        trades, reinvestment_count, distribution_count = _build_position_trade_frame(df)
+        if reinvestment_count:
+            print(f"Detected {reinvestment_count} reinvestments.")
+        if distribution_count:
+            print(f"Detected {distribution_count} share distributions.")
         symbols = trades["symbol"].dropna()
         symbols = symbols[symbols.ne("")].unique().tolist()
 

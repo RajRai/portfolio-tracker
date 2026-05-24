@@ -7,6 +7,7 @@ from src.reports import analyze_fidelity
 from src.reports.analyze_fidelity import (
     _apply_future_split_adjustments,
     _apply_inception_day_return_override,
+    _build_position_trade_frame,
     _estimate_inception_day_return,
     _expand_fetch_start_for_short_report_window,
     _fetch_polygon_prices_with_minimum_history,
@@ -18,6 +19,47 @@ from src.reports.analyze_fidelity import (
     _upsert_accounts_index_entry,
     build_remaining_lot_book,
 )
+
+
+def test_build_position_trade_frame_ignores_split_distribution_rows():
+    df = pd.DataFrame(
+        [
+            {
+                "Run Date": "2021-02-08",
+                "Action": "YOU BOUGHT ALPHABET INC CAP STK CL C (GOOG) (Cash)",
+                "Symbol": "GOOG",
+                "Type": "Cash",
+                "Quantity": "0.011",
+                "Price": "2095.89",
+                "Amount": "-23.05",
+            },
+            {
+                "Run Date": "2022-07-18",
+                "Action": "DISTRIBUTION ALPHABET INC CAP STK CL C (GOOG) (Cash)",
+                "Symbol": "GOOG",
+                "Type": "Shares",
+                "Quantity": "0.551",
+                "Price": "",
+                "Amount": "60.56",
+            },
+            {
+                "Run Date": "2024-02-28",
+                "Action": "YOU SOLD ALPHABET INC CAP STK CL C (GOOG) (Cash)",
+                "Symbol": "GOOG",
+                "Type": "Cash",
+                "Quantity": "-0.580",
+                "Price": "139.13",
+                "Amount": "80.70",
+            },
+        ]
+    )
+
+    trades, reinvestment_count, distribution_count = _build_position_trade_frame(df)
+
+    assert reinvestment_count == 0
+    assert distribution_count == 0
+    assert trades["symbol"].tolist() == ["GOOG", "GOOG"]
+    assert trades["quantity"].tolist() == pytest.approx([0.011, -0.58])
 
 
 def test_build_remaining_lot_book_prefers_long_term_lots_before_short_term():
