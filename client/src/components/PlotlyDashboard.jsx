@@ -939,7 +939,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             if (next) {
                 lastTouchWeightsHoverRef.current = next;
             }
-            setHoverFromEvent(event, lastTouchWeightsHoverRef.current);
+            setHoverFromEvent(event, lastTouchWeightsHoverRef.current || weightsHover);
         };
 
         const handleTouchMove = (event) => {
@@ -947,15 +947,15 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             if (next) {
                 lastTouchWeightsHoverRef.current = next;
             }
-            setHoverFromEvent(event, lastTouchWeightsHoverRef.current);
+            setHoverFromEvent(event, lastTouchWeightsHoverRef.current || weightsHover);
         };
 
         const handleTouchEnd = (event) => {
-            const next = readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current;
+            const next =
+                readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current || weightsHover;
             suppressNextWeightsClickUntilRef.current = Date.now() + 750;
             lastTouchWeightsHoverRef.current = null;
             if (!next) {
-                handleLeave();
                 return;
             }
             if (hasHoverPointer && !weightsTouchMode) {
@@ -968,7 +968,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
         const handleTouchCancel = () => {
             lastTouchWeightsHoverRef.current = null;
-            handleLeave();
         };
 
         const touchListenerOptions = { passive: true, capture: true };
@@ -992,6 +991,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     }, [
         charts,
         hasHoverPointer,
+        weightsHover,
         weightsHoverData,
         weightsPinnedDate,
         weightsTouchMode,
