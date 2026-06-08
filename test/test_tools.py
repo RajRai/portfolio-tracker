@@ -117,6 +117,69 @@ def test_stock_source_rejects_fund_source(tmp_path):
         tools.stock_source({"sourceType": "fund", "fundTicker": "SPY"}, [], tmp_path, api_key="key")
 
 
+def test_algo_output_processor_strips_wrapped_lines_and_groups_tickers(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_polygon_snapshot_quotes",
+        lambda tickers, api_key=None: {
+            "CEF": {"livePrice": 44.13, "previousClose": 44.0, "priceSource": "last_trade"},
+            "AMD": {"livePrice": 100.0, "previousClose": 99.0, "priceSource": "last_trade"},
+            "MSFT": {"livePrice": 150.0, "previousClose": 149.0, "priceSource": "last_trade"},
+        },
+    )
+
+    payload = tools.algo_output_processor(
+        """
+2026-06-06 00:00:00 :\tFINAL_HEADER Ticker,TargetBuyPrice,TargetSellPrice
+2026-06-06 00:00:00 :\tFINAL_ROW CEF,288338220.18,396465052.75
+2026-06-06 00:00:00 :\tFINAL_ROW AMD,53.44,73.48
+2026-06-06 00:00:00 :\tFINAL_ROW MSFT,100.00,200.00
+""".strip(),
+        api_key="key",
+    )
+
+    assert payload["groups"] == {
+        "buy": ["CEF"],
+        "sell": ["AMD"],
+        "hold": ["MSFT"],
+    }
+    assert payload["summary"] == {
+        "total": 3,
+        "buy": 1,
+        "sell": 1,
+        "hold": 1,
+        "unpriced": 0,
+    }
+
+
+def test_algo_output_processor_accepts_plain_csv_with_minimal_lowercase_columns(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_polygon_snapshot_quotes",
+        lambda tickers, api_key=None: {
+            "AAPL": {"livePrice": 90.0, "previousClose": 91.0, "priceSource": "prev_close"},
+            "MSFT": {"livePrice": 80.0, "previousClose": 81.0, "priceSource": "prev_close"},
+        },
+    )
+
+    payload = tools.algo_output_processor(
+        """
+ticker,targetBuyPrice,targetSellPrice
+MSFT,100,120
+AAPL,100,120
+""".strip(),
+        api_key="key",
+    )
+
+    assert payload["groups"] == {
+        "buy": ["AAPL", "MSFT"],
+        "sell": [],
+        "hold": [],
+    }
+    assert payload["summary"]["buy"] == 2
+    assert payload["summary"]["total"] == 2
+
+
 def test_market_cap_weights_calculates_percentages(monkeypatch):
     monkeypatch.setattr(
         tools,

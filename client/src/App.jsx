@@ -22,6 +22,7 @@ import GitHubIcon from "@mui/icons-material/GitHub";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import AccountTabs from "./components/AccountTabs.jsx";
+import AlgoOutputProcessorPage from "./components/AlgoOutputProcessorPage.jsx";
 import ModelPortfolioToolPage from "./components/ModelPortfolioToolPage.jsx";
 import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
@@ -91,6 +92,7 @@ const CONNECTING_LIVE_MESSAGE = "Live prices: connecting";
 
 const TOOL_PATHS = {
     home: "/",
+    algoOutput: "/tools/algo-output-processor",
     marketCap: "/tools/market-cap-weights",
     earnings: "/tools/earnings-calendar",
     modelPortfolio: "/tools/model-portfolio-report",
@@ -98,6 +100,7 @@ const TOOL_PATHS = {
 
 const pageFromPath = (path) => {
     const cleanPath = path.replace(/\/$/, "") || "/";
+    if (cleanPath === TOOL_PATHS.algoOutput) return "algoOutput";
     if (cleanPath === TOOL_PATHS.marketCap) return "marketCap";
     if (cleanPath === TOOL_PATHS.earnings) return "earnings";
     if (cleanPath === TOOL_PATHS.modelPortfolio) return "modelPortfolio";
@@ -206,6 +209,7 @@ export default function App() {
 
     useEffect(() => {
         const toolNameByPage = {
+            algoOutput: "algo_output_processor",
             marketCap: "market_cap_weights",
             earnings: "earnings_calendar",
             modelPortfolio: "portfolio_backsimulator",
@@ -607,6 +611,7 @@ export default function App() {
                     bgcolor: theme.palette.background.default,
                 }}
             >
+                {page === "algoOutput" && <AlgoOutputProcessorPage />}
                 {page === "marketCap" && <StockToolsPage tool="marketCap" accounts={accounts} />}
                 {page === "earnings" && <StockToolsPage tool="earnings" accounts={accounts} />}
                 {page === "modelPortfolio" && <ModelPortfolioToolPage accounts={accounts} />}
@@ -685,6 +690,9 @@ function DesktopToolsMenu({ page, onNavigate }) {
                 anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
                 MenuListProps={{ dense: true }}
             >
+                <MenuItem selected={page === "algoOutput"} onClick={() => handleNavigate("algoOutput")}>
+                    Algo Output Processor
+                </MenuItem>
                 <MenuItem selected={page === "marketCap"} onClick={() => handleNavigate("marketCap")}>
                     Market Cap Weights
                 </MenuItem>
@@ -733,6 +741,14 @@ function MobileMenu({ onNavigate }) {
                 <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>
                     Tools
                 </ListSubheader>
+                <MenuItem
+                    onClick={() => {
+                        handleClose();
+                        onNavigate("algoOutput");
+                    }}
+                >
+                    Algo Output Processor
+                </MenuItem>
                 <MenuItem
                     onClick={() => {
                         handleClose();

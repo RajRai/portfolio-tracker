@@ -14,6 +14,17 @@ def test_frontend_deep_link_serves_react_index(monkeypatch, tmp_path):
     assert b'<div id="root"></div>' in response.data
 
 
+def test_frontend_algo_output_deep_link_serves_react_index(monkeypatch, tmp_path):
+    index_path = tmp_path / "index.html"
+    index_path.write_text("<!doctype html><div id=\"root\"></div>", encoding="utf-8")
+    monkeypatch.setattr(server, "CLIENT_DIR", tmp_path)
+
+    response = server.app.test_client().get("/tools/algo-output-processor")
+
+    assert response.status_code == 200
+    assert b'<div id="root"></div>' in response.data
+
+
 def test_frontend_model_portfolio_deep_link_serves_react_index(monkeypatch, tmp_path):
     index_path = tmp_path / "index.html"
     index_path.write_text("<!doctype html><div id=\"root\"></div>", encoding="utf-8")
@@ -61,6 +72,26 @@ def test_embedded_report_rewrite_serves_same_origin_html(monkeypatch, tmp_path):
     assert "<base target=\"_blank\" />" in html
     assert ":root { color-scheme: dark; }" in html
     assert "background: #0f0f0f !important;" in html
+
+
+def test_algo_output_processor_endpoint_returns_json(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "algo_output_processor",
+        lambda raw_text, api_key=None: {
+            "groups": {"buy": ["CEF"], "sell": [], "hold": []},
+            "summary": {"total": 1, "buy": 1, "sell": 0, "hold": 0, "unpriced": 0},
+            "warnings": [],
+        },
+    )
+
+    response = server.app.test_client().post(
+        "/api/tools/algo-output-processor",
+        json={"rawText": "Ticker,TargetBuyPrice,TargetSellPrice\nCEF,1,2"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["groups"]["buy"] == ["CEF"]
 
 
 def test_load_accounts_sorts_using_canonical_account_order(monkeypatch, tmp_path):

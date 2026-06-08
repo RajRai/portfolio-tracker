@@ -17,7 +17,7 @@ import requests
 from websockets.sync.client import connect
 
 from src.reports.model_portfolio import create_model_portfolio_report
-from src.tools import ToolDataError, earnings_calendar, market_cap_weights, stock_source
+from src.tools import ToolDataError, algo_output_processor, earnings_calendar, market_cap_weights, stock_source
 from src.util import BASE_DIR
 
 load_dotenv()
@@ -1219,6 +1219,16 @@ def tool_earnings_calendar():
             body.get("end"),
             os.environ.get("POLYGON_API_KEY"),
         )
+    except ToolDataError as exc:
+        return _tool_error_response(exc)
+    return jsonify(payload)
+
+
+@app.route("/api/tools/algo-output-processor", methods=["POST"])
+def tool_algo_output_processor():
+    body = _json_body()
+    try:
+        payload = algo_output_processor(body.get("rawText"), os.environ.get("POLYGON_API_KEY"))
     except ToolDataError as exc:
         return _tool_error_response(exc)
     return jsonify(payload)

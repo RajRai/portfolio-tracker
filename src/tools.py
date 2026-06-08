@@ -15,6 +15,7 @@ from src.yfinance_cache import yf
 POLYGON_BASE_URL = os.environ.get("POLYGON_BASE_URL", "https://api.polygon.io")
 MAX_SOURCE_TICKERS = 1000
 MAX_EARNINGS_TICKERS = 300
+MAX_ALGO_ROWS = 1000
 
 
 class ToolDataError(RuntimeError):
@@ -31,6 +32,13 @@ def _to_float(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+def _positive_float(value) -> float | None:
+    out = _to_float(value)
+    if out is None or out <= 0:
+        return None
+    return out
 
 
 def normalize_tickers(values) -> list[str]:
@@ -248,6 +256,219 @@ def stock_source(body: dict, accounts: list[dict], out_dir: Path, api_key: str |
     if source_type == "fund":
         raise ToolDataError("Index fund loading was removed. Add those stocks manually.", 400)
     raise ToolDataError("Choose a portfolio source or add stocks manually", 400)
+
+
+def _chunked(items: list[str], size: int):
+    for idx in range(0, len(items), size):
+        yield items[idx:idx + size]
+
+
+def _extract_algo_csv(raw_text: str) -> tuple[list[str] | None, list[list[str]]]:
+    text = str(raw_text or "")
+    header = None
+    rows = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        header_match = re.search(r"\bFINAL_HEADER\s+(.+)$", line)
+        if header_match:
+            header = next(csv.reader([header_match.group(1)]), [])
+            continue
+
+        row_match = re.search(r"\bFINAL_ROW\s+(.+)$", line)
+        if row_match:
+            rows.append(next(csv.reader([row_match.group(1)]), []))
+
+    if header is not None or rows:
+        return header, rows
+
+    csv_lines = [line for line in text.splitlines() if line.strip()]
+    if not csv_lines:
+        return None, []
+
+    parsed = list(csv.reader(csv_lines))
+    if not parsed:
+        return None, []
+    return parsed[0], parsed[1:]
+
+
+def _row_dict_from_values(header: list[str], values: list[str]) -> dict[str, str]:
+    padded = list(values[:len(header)])
+    if len(padded) < len(header):
+        padded.extend([""] * (len(header) - len(padded)))
+    return {
+        str(column).strip(): str(padded[idx]).strip()
+        for idx, column in enumerate(header)
+    }
+
+
+def _normalize_header_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+
+
+def _parse_algo_output_rows(raw_text: str) -> tuple[list[dict], list[str]]:
+    header, value_rows = _extract_algo_csv(raw_text)
+    if not header:
+        raise ToolDataError("Paste text that includes algo output rows", 400)
+
+    normalized_header = [str(column).strip() for column in header]
+    column_lookup = {
+        _normalize_header_name(column): column
+        for column in normalized_header
+        if str(column).strip()
+    }
+    required_columns = {
+        "ticker": "ticker",
+        "targetbuyprice": "targetBuyPrice",
+        "targetsellprice": "targetSellPrice",
+    }
+    missing_columns = [
+        display_name
+        for lookup_name, display_name in required_columns.items()
+        if lookup_name not in column_lookup
+    ]
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ToolDataError(f"Algo output is missing required columns: {missing}", 400)
+
+    parsed_rows = []
+    warnings = []
+
+    for row_number, values in enumerate(value_rows, start=1):
+        if not any(str(value).strip() for value in values):
+            continue
+
+        row = _row_dict_from_values(normalized_header, values)
+        ticker_values = normalize_tickers(row.get(column_lookup["ticker"]))
+        if not ticker_values:
+            warnings.append(f"Row {row_number}: skipped because the ticker was missing or invalid.")
+            continue
+
+        target_buy_price = _to_float(row.get(column_lookup["targetbuyprice"]))
+        target_sell_price = _to_float(row.get(column_lookup["targetsellprice"]))
+        if target_buy_price is None or target_sell_price is None:
+            warnings.append(
+                f"Row {row_number} ({ticker_values[0]}): skipped because target prices were missing or invalid."
+            )
+            continue
+
+        parsed_rows.append({
+            "rowNumber": row_number,
+            "ticker": ticker_values[0],
+            "targetBuyPrice": target_buy_price,
+            "targetSellPrice": target_sell_price,
+            "sourceRow": row,
+        })
+
+        if len(parsed_rows) >= MAX_ALGO_ROWS:
+            warnings.append(f"Only the first {MAX_ALGO_ROWS} algo rows were processed.")
+            break
+
+    if not parsed_rows:
+        raise ToolDataError("No valid algo rows were found in the pasted text", 400)
+
+    return parsed_rows, warnings
+
+
+def _snapshot_quote_from_item(item: dict) -> dict:
+    prev_day = item.get("prevDay") or {}
+    previous_close = _positive_float(prev_day.get("c"))
+
+    for source_name, source in (
+        ("last_trade", item.get("lastTrade") or {}),
+        ("minute_close", item.get("min") or {}),
+        ("day_close", item.get("day") or {}),
+    ):
+        live_price = _positive_float(source.get("p"))
+        if live_price is None:
+            live_price = _positive_float(source.get("c"))
+        if live_price is None:
+            continue
+        return {
+            "livePrice": live_price,
+            "previousClose": previous_close,
+            "priceSource": source_name,
+            "priceUpdated": source.get("t") or item.get("updated"),
+        }
+
+    return {
+        "livePrice": previous_close,
+        "previousClose": previous_close,
+        "priceSource": "prev_close" if previous_close is not None else None,
+        "priceUpdated": item.get("updated"),
+    }
+
+
+def _fetch_polygon_snapshot_quotes(tickers: list[str], api_key: str | None = None) -> dict[str, dict]:
+    normalized = normalize_tickers(tickers)
+    quotes = {}
+
+    for chunk in _chunked(normalized, 50):
+        payload = _polygon_get(
+            "/v2/snapshot/locale/us/markets/stocks/tickers",
+            {"tickers": ",".join(chunk)},
+            api_key,
+        )
+        results = {
+            item.get("ticker"): item
+            for item in payload.get("tickers", [])
+            if item.get("ticker")
+        }
+        for ticker in chunk:
+            quotes[ticker] = _snapshot_quote_from_item(results.get(ticker) or {})
+
+    return quotes
+
+
+def _classify_algo_price(live_price: float | None, target_buy_price: float, target_sell_price: float) -> str | None:
+    if live_price is None:
+        return None
+    if live_price <= target_buy_price:
+        return "buy"
+    if live_price >= target_sell_price:
+        return "sell"
+    return "hold"
+
+
+def algo_output_processor(raw_text: str, api_key: str | None = None) -> dict:
+    parsed_rows, warnings = _parse_algo_output_rows(raw_text)
+    quotes = _fetch_polygon_snapshot_quotes([row["ticker"] for row in parsed_rows], api_key)
+
+    groups = {
+        "buy": [],
+        "sell": [],
+        "hold": [],
+    }
+    summary = {
+        "total": len(parsed_rows),
+        "buy": 0,
+        "sell": 0,
+        "hold": 0,
+        "unpriced": 0,
+    }
+
+    for row in parsed_rows:
+        quote = quotes.get(row["ticker"]) or {}
+        live_price = _positive_float(quote.get("livePrice"))
+        classification = _classify_algo_price(live_price, row["targetBuyPrice"], row["targetSellPrice"])
+        if classification is None:
+            summary["unpriced"] += 1
+            warnings.append(f"{row['ticker']}: live price was unavailable from Polygon.")
+        else:
+            summary[classification] += 1
+            groups[classification].append(row["ticker"])
+
+    for classification in groups:
+        groups[classification] = sorted(groups[classification])
+
+    return {
+        "groups": groups,
+        "summary": summary,
+        "warnings": warnings,
+    }
 
 
 def _fetch_ticker_overviews(tickers: list[str], api_key: str | None = None) -> dict[str, dict]:
