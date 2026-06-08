@@ -373,6 +373,15 @@ def _parse_algo_output_rows(raw_text: str) -> tuple[list[dict], list[str]]:
     return parsed_rows, warnings
 
 
+def _text_contains_ticker(raw_text: str, ticker: str) -> bool:
+    text = str(raw_text or "").upper()
+    normalized_ticker = str(ticker or "").upper().strip()
+    if not text or not normalized_ticker:
+        return False
+    pattern = rf"(?<![A-Z0-9]){re.escape(normalized_ticker)}(?![A-Z0-9])"
+    return re.search(pattern, text) is not None
+
+
 def _snapshot_quote_from_item(item: dict) -> dict:
     prev_day = item.get("prevDay") or {}
     previous_close = _positive_float(prev_day.get("c"))
@@ -433,15 +442,34 @@ def _classify_algo_price(live_price: float | None, target_buy_price: float, targ
     return "hold"
 
 
-def algo_output_processor(raw_text: str, api_key: str | None = None) -> dict:
-    parsed_rows, warnings = _parse_algo_output_rows(raw_text)
-    quotes = _fetch_polygon_snapshot_quotes([row["ticker"] for row in parsed_rows], api_key)
-
+def _build_groups_summary(rows: list[dict], classification_key: str = "classification") -> tuple[dict, dict]:
     groups = {
         "buy": [],
         "sell": [],
         "hold": [],
     }
+    summary = {
+        "total": len(rows),
+        "buy": 0,
+        "sell": 0,
+        "hold": 0,
+    }
+    for row in rows:
+        classification = row.get(classification_key)
+        if classification not in groups:
+            continue
+        summary[classification] += 1
+        groups[classification].append(row["ticker"])
+
+    for classification in groups:
+        groups[classification] = sorted(groups[classification])
+
+    return groups, summary
+
+
+def _price_signal_rows(raw_text: str, api_key: str | None = None) -> tuple[list[dict], dict, list[str]]:
+    parsed_rows, warnings = _parse_algo_output_rows(raw_text)
+    quotes = _fetch_polygon_snapshot_quotes([row["ticker"] for row in parsed_rows], api_key)
     summary = {
         "total": len(parsed_rows),
         "buy": 0,
@@ -449,6 +477,7 @@ def algo_output_processor(raw_text: str, api_key: str | None = None) -> dict:
         "hold": 0,
         "unpriced": 0,
     }
+    classified_rows = []
 
     for row in parsed_rows:
         quote = quotes.get(row["ticker"]) or {}
@@ -459,15 +488,96 @@ def algo_output_processor(raw_text: str, api_key: str | None = None) -> dict:
             warnings.append(f"{row['ticker']}: live price was unavailable from Polygon.")
         else:
             summary[classification] += 1
-            groups[classification].append(row["ticker"])
+            classified_rows.append({**row, "classification": classification})
 
-    for classification in groups:
-        groups[classification] = sorted(groups[classification])
+    return classified_rows, summary, warnings
+
+
+def _price_signals_from_rows(classified_rows: list[dict], summary: dict, warnings: list[str]) -> dict:
+    groups, grouped_summary = _build_groups_summary(classified_rows)
+    next_summary = dict(summary)
+    next_summary["buy"] = grouped_summary["buy"]
+    next_summary["sell"] = grouped_summary["sell"]
+    next_summary["hold"] = grouped_summary["hold"]
 
     return {
         "groups": groups,
-        "summary": summary,
+        "summary": next_summary,
         "warnings": warnings,
+    }
+
+
+def _algo_price_signals(raw_text: str, api_key: str | None = None) -> dict:
+    classified_rows, summary, warnings = _price_signal_rows(raw_text, api_key)
+    return _price_signals_from_rows(classified_rows, summary, warnings)
+
+
+def _portfolio_action_signals(price_rows: list[dict], raw_text: str) -> dict:
+    held_tickers = {
+        row["ticker"]
+        for row in price_rows
+        if _text_contains_ticker(raw_text, row["ticker"])
+    }
+    classified_rows = []
+    unpriced = 0
+
+    for row in price_rows:
+        price_classification = row.get("classification")
+        if price_classification is None:
+            unpriced += 1
+            continue
+        if price_classification == "sell" and row["ticker"] in held_tickers:
+            action_classification = "sell"
+        elif price_classification == "buy" and row["ticker"] not in held_tickers:
+            action_classification = "buy"
+        else:
+            action_classification = "hold"
+        classified_rows.append({
+            "ticker": row["ticker"],
+            "classification": action_classification,
+        })
+
+    groups, summary = _build_groups_summary(classified_rows)
+    summary["total"] = len(price_rows)
+    summary["unpriced"] = unpriced
+    return {
+        "groups": groups,
+        "summary": summary,
+        "warnings": [],
+    }
+
+
+def algo_output_processor(
+    raw_text: str | None,
+    api_key: str | None = None,
+    portfolio_raw_text: str | None = None,
+    include_portfolio_actions: bool = False,
+) -> dict:
+    price_signals = None
+    portfolio_actions = None
+    combined_warnings = []
+    price_rows = []
+
+    if str(raw_text or "").strip():
+        price_rows, price_summary, price_warnings = _price_signal_rows(raw_text, api_key)
+        price_signals = _price_signals_from_rows(price_rows, price_summary, price_warnings)
+        combined_warnings.extend(price_signals.get("warnings") or [])
+
+    if include_portfolio_actions and str(portfolio_raw_text or "").strip():
+        if price_signals is None:
+            raise ToolDataError("Paste algo output to calculate buy and sell actions", 400)
+        portfolio_actions = _portfolio_action_signals(price_rows, portfolio_raw_text)
+        combined_warnings.extend(portfolio_actions.get("warnings") or [])
+    elif include_portfolio_actions:
+        raise ToolDataError("Paste the current portfolio in the optional box", 400)
+
+    if price_signals is None and portfolio_actions is None:
+        raise ToolDataError("Paste algo output, portfolio weights, or both", 400)
+
+    return {
+        "priceSignals": price_signals,
+        "portfolioActions": portfolio_actions,
+        "warnings": combined_warnings,
     }
 
 

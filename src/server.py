@@ -1228,7 +1228,12 @@ def tool_earnings_calendar():
 def tool_algo_output_processor():
     body = _json_body()
     try:
-        payload = algo_output_processor(body.get("rawText"), os.environ.get("POLYGON_API_KEY"))
+        payload = algo_output_processor(
+            body.get("rawText"),
+            os.environ.get("POLYGON_API_KEY"),
+            portfolio_raw_text=body.get("portfolioRawText"),
+            include_portfolio_actions=bool(body.get("includePortfolioActions")),
+        )
     except ToolDataError as exc:
         return _tool_error_response(exc)
     return jsonify(payload)

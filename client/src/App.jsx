@@ -690,9 +690,6 @@ function DesktopToolsMenu({ page, onNavigate }) {
                 anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
                 MenuListProps={{ dense: true }}
             >
-                <MenuItem selected={page === "algoOutput"} onClick={() => handleNavigate("algoOutput")}>
-                    Algo Output Processor
-                </MenuItem>
                 <MenuItem selected={page === "marketCap"} onClick={() => handleNavigate("marketCap")}>
                     Market Cap Weights
                 </MenuItem>
@@ -701,6 +698,9 @@ function DesktopToolsMenu({ page, onNavigate }) {
                 </MenuItem>
                 <MenuItem selected={page === "modelPortfolio"} onClick={() => handleNavigate("modelPortfolio")}>
                     Portfolio Backsimulator
+                </MenuItem>
+                <MenuItem selected={page === "algoOutput"} onClick={() => handleNavigate("algoOutput")}>
+                    Algo Output Processor
                 </MenuItem>
             </Menu>
         </>
@@ -744,14 +744,6 @@ function MobileMenu({ onNavigate }) {
                 <MenuItem
                     onClick={() => {
                         handleClose();
-                        onNavigate("algoOutput");
-                    }}
-                >
-                    Algo Output Processor
-                </MenuItem>
-                <MenuItem
-                    onClick={() => {
-                        handleClose();
                         onNavigate("marketCap");
                     }}
                 >
@@ -772,6 +764,14 @@ function MobileMenu({ onNavigate }) {
                     }}
                 >
                     Portfolio Backsimulator
+                </MenuItem>
+                <MenuItem
+                    onClick={() => {
+                        handleClose();
+                        onNavigate("algoOutput");
+                    }}
+                >
+                    Algo Output Processor
                 </MenuItem>
 
                 <ListSubheader disableSticky sx={{ lineHeight: 1.8 }}>

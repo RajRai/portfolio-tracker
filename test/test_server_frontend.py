@@ -78,9 +78,13 @@ def test_algo_output_processor_endpoint_returns_json(monkeypatch):
     monkeypatch.setattr(
         server,
         "algo_output_processor",
-        lambda raw_text, api_key=None: {
-            "groups": {"buy": ["CEF"], "sell": [], "hold": []},
-            "summary": {"total": 1, "buy": 1, "sell": 0, "hold": 0, "unpriced": 0},
+        lambda raw_text, api_key=None, **kwargs: {
+            "priceSignals": {
+                "groups": {"buy": ["CEF"], "sell": [], "hold": []},
+                "summary": {"total": 1, "buy": 1, "sell": 0, "hold": 0, "unpriced": 0},
+                "warnings": [],
+            },
+            "portfolioSignals": None,
             "warnings": [],
         },
     )
@@ -91,7 +95,7 @@ def test_algo_output_processor_endpoint_returns_json(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["groups"]["buy"] == ["CEF"]
+    assert response.get_json()["priceSignals"]["groups"]["buy"] == ["CEF"]
 
 
 def test_load_accounts_sorts_using_canonical_account_order(monkeypatch, tmp_path):

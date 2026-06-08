@@ -138,12 +138,12 @@ def test_algo_output_processor_strips_wrapped_lines_and_groups_tickers(monkeypat
         api_key="key",
     )
 
-    assert payload["groups"] == {
+    assert payload["priceSignals"]["groups"] == {
         "buy": ["CEF"],
         "sell": ["AMD"],
         "hold": ["MSFT"],
     }
-    assert payload["summary"] == {
+    assert payload["priceSignals"]["summary"] == {
         "total": 3,
         "buy": 1,
         "sell": 1,
@@ -171,13 +171,122 @@ AAPL,100,120
         api_key="key",
     )
 
-    assert payload["groups"] == {
+    assert payload["priceSignals"]["groups"] == {
         "buy": ["AAPL", "MSFT"],
         "sell": [],
         "hold": [],
     }
-    assert payload["summary"]["buy"] == 2
-    assert payload["summary"]["total"] == 2
+    assert payload["priceSignals"]["summary"]["buy"] == 2
+    assert payload["priceSignals"]["summary"]["total"] == 2
+
+
+def test_algo_output_processor_can_parse_portfolio_weight_blocks():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        tools,
+        "_fetch_polygon_snapshot_quotes",
+        lambda tickers, api_key=None: {
+            "NVDA": {"livePrice": 400.0, "previousClose": 399.0, "priceSource": "prev_close"},
+            "ACAD": {"livePrice": 400.0, "previousClose": 399.0, "priceSource": "prev_close"},
+            "FSLR": {"livePrice": 10.0, "previousClose": 9.0, "priceSource": "prev_close"},
+        },
+    )
+
+    payload = tools.algo_output_processor(
+        raw_text="""
+ticker,targetBuyPrice,targetSellPrice
+NVDA,100,300
+ACAD,100,300
+FSLR,50,100
+""".strip(),
+        include_portfolio_actions=True,
+        portfolio_raw_text="""
+Symbol\tCurrent weight\tTarget weight\tAction
+NVIDIA
+
+ NVDA
+NVIDIA
+7.3 %
+
+7.2
+%
+Target allocation of NVDA is 7.2 %
+
+Delete
+ACADIA PHARMACEUTICALS
+
+ ACAD
+ACADIA PHARMACEUTICALS
+7.3 %
+
+7.2
+%
+Target allocation of ACAD is 7.2 %
+
+Delete
+FIRST SOLAR
+
+ FSLR
+FIRST SOLAR
+6.9 %
+
+7.1
+%
+Target allocation of FSLR is 7.1 %
+""".strip(),
+    )
+    monkeypatch.undo()
+
+    assert payload["portfolioActions"]["groups"] == {
+        "buy": [],
+        "sell": ["ACAD", "NVDA"],
+        "hold": ["FSLR"],
+    }
+    assert payload["portfolioActions"]["summary"] == {
+        "total": 3,
+        "buy": 0,
+        "sell": 2,
+        "hold": 1,
+        "unpriced": 0,
+    }
+
+
+def test_algo_output_processor_can_parse_portfolio_weight_table_rows():
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        tools,
+        "_fetch_polygon_snapshot_quotes",
+        lambda tickers, api_key=None: {
+            "AGX": {"livePrice": 10.0, "previousClose": 11.0, "priceSource": "prev_close"},
+            "DOCU": {"livePrice": 10.0, "previousClose": 11.0, "priceSource": "prev_close"},
+            "CART": {"livePrice": 200.0, "previousClose": 199.0, "priceSource": "prev_close"},
+            "NEWT": {"livePrice": 5.0, "previousClose": 4.0, "priceSource": "prev_close"},
+        },
+    )
+
+    payload = tools.algo_output_processor(
+        raw_text="""
+ticker,targetBuyPrice,targetSellPrice
+AGX,50,100
+DOCU,50,100
+CART,50,150
+NEWT,50,100
+""".strip(),
+        include_portfolio_actions=True,
+        portfolio_raw_text="""
+Symbol\tCurrent weight\tTarget weight\tAction
+AGX\t7.0 %\t7.1 %\tDelete
+DOCU\t7.0 %\t7.1 %\tDelete
+CART\t7.2 %\t7.2 %\tDelete
+""".strip(),
+    )
+    monkeypatch.undo()
+
+    assert payload["portfolioActions"]["groups"] == {
+        "buy": ["NEWT"],
+        "sell": ["CART"],
+        "hold": ["AGX", "DOCU"],
+    }
 
 
 def test_market_cap_weights_calculates_percentages(monkeypatch):
