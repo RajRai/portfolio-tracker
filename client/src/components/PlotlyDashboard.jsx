@@ -6,10 +6,8 @@ import {
     Stack,
     Divider,
     Box,
-    IconButton,
 } from "@mui/material";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import Papa from "papaparse";
 import { alpha, useTheme } from "@mui/material/styles";
 import ReportFrame from "./ReportFrame.jsx";
@@ -274,24 +272,38 @@ const getClientPoint = (event) => {
     return null;
 };
 
-const chartTimestampToDate = (timestampMs) => {
-    if (!Number.isFinite(timestampMs)) return null;
-    const date = new Date(timestampMs);
-    if (Number.isNaN(date.getTime())) return null;
-    return date.toISOString().slice(0, 10);
+const nearestTimestampIndex = (sortedValues, target) => {
+    if (!sortedValues.length || !Number.isFinite(target)) return -1;
+    if (target <= sortedValues[0]) return 0;
+    if (target >= sortedValues[sortedValues.length - 1]) return sortedValues.length - 1;
+
+    let lo = 0;
+    let hi = sortedValues.length - 1;
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const value = sortedValues[mid];
+        if (value === target) return mid;
+        if (value < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    const prev = sortedValues[Math.max(0, hi)];
+    const next = sortedValues[Math.min(sortedValues.length - 1, lo)];
+    return Math.abs(prev - target) <= Math.abs(next - target)
+        ? Math.max(0, hi)
+        : Math.min(sortedValues.length - 1, lo);
 };
 
 const buildWeightsHoverStateFromData = (weightsHoverData, hoverDate) => {
     if (!hoverDate) return null;
-    const dates = weightsHoverData?.allDates || [];
-    if (!dates.length || hoverDate < dates[0] || hoverDate > dates[dates.length - 1]) {
-        return null;
-    }
     const rows = (weightsHoverData?.series || [])
         .slice()
         .reverse()
         .map((series) => {
-            const value = series.rawValuesByDate.get(hoverDate);
+            const value = series.valuesByDate.get(hoverDate);
             if (value == null || value <= 0.0005) return null;
             return {
                 name: series.name,
@@ -300,7 +312,7 @@ const buildWeightsHoverStateFromData = (weightsHoverData, hoverDate) => {
             };
         })
         .filter(Boolean);
-    return { date: hoverDate, rows, timestamp: Date.parse(`${hoverDate}T12:00:00`) };
+    return rows.length ? { date: hoverDate, rows } : null;
 };
 
 const weightsHoverStateEquals = (left, right) => {
@@ -315,70 +327,6 @@ const weightsHoverStateEquals = (left, right) => {
             row.color === other.color &&
             row.value === other.value;
     });
-};
-
-const interpolateWeightsSeriesValue = (rawPoints, hoverTimestamp) => {
-    if (!rawPoints?.length || !Number.isFinite(hoverTimestamp)) return null;
-    const firstPoint = rawPoints[0];
-    const lastPoint = rawPoints[rawPoints.length - 1];
-    if (hoverTimestamp < firstPoint.timestamp || hoverTimestamp > lastPoint.timestamp) {
-        return null;
-    }
-
-    let lo = 0;
-    let hi = rawPoints.length - 1;
-    while (lo <= hi) {
-        const mid = Math.floor((lo + hi) / 2);
-        const point = rawPoints[mid];
-        if (point.timestamp === hoverTimestamp) {
-            return point.value;
-        }
-        if (point.timestamp < hoverTimestamp) {
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-
-    const prev = rawPoints[Math.max(0, hi)];
-    const next = rawPoints[Math.min(rawPoints.length - 1, lo)];
-    if (!prev || !next || prev.value == null || next.value == null) {
-        return null;
-    }
-    if (next.timestamp === prev.timestamp) {
-        return prev.value;
-    }
-
-    const ratio = (hoverTimestamp - prev.timestamp) / (next.timestamp - prev.timestamp);
-    return prev.value + (next.value - prev.value) * ratio;
-};
-
-const buildWeightsHoverStateFromTimestamp = (weightsHoverData, hoverTimestamp) => {
-    const hoverDate = chartTimestampToDate(hoverTimestamp);
-    if (!hoverDate) return null;
-    if (weightsHoverData?.allDateSet?.has(hoverDate)) {
-        return buildWeightsHoverStateFromData(weightsHoverData, hoverDate);
-    }
-    const dates = weightsHoverData?.allDates || [];
-    if (!dates.length || hoverDate < dates[0] || hoverDate > dates[dates.length - 1]) {
-        return null;
-    }
-
-    const rows = (weightsHoverData?.series || [])
-        .slice()
-        .reverse()
-        .map((series) => {
-            const value = interpolateWeightsSeriesValue(series.rawPoints, hoverTimestamp);
-            if (value == null || value <= 0.0005) return null;
-            return {
-                name: series.name,
-                color: series.color,
-                value,
-            };
-        })
-        .filter(Boolean);
-
-    return { date: hoverDate, rows, timestamp: hoverTimestamp };
 };
 
 const withLiveWeights = (weightsSeries, liveInputs, quotes, asOfDate) => {
@@ -688,7 +636,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const [weightsHover, setWeightsHover] = useState(null);
     const [weightsPinnedDate, setWeightsPinnedDate] = useState(null);
     const [weightsSelectionMarker, setWeightsSelectionMarker] = useState(null);
-    const [weightsMouseInside, setWeightsMouseInside] = useState(false);
     const [weightsTouchMode, setWeightsTouchMode] = useState(false);
     const [weightsHoverSort, setWeightsHoverSort] = useState("weight");
     const weightsSectionRef = useRef(null);
@@ -839,32 +786,19 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             const series = (displayData?.weights || []).map((item, index) => ({
                 name: item.name,
                 color: WEIGHTS_COLOR_PALETTE[index % WEIGHTS_COLOR_PALETTE.length],
-                rawPoints: (item.points || [])
-                    .filter((point) => point?.t)
-                    .map((point) => ({
-                        date: point.t,
-                        timestamp: Date.parse(`${point.t}T12:00:00`),
-                        value: point.v == null ? null : point.v,
-                    })),
-                rawValuesByDate: new Map(
-                    (item.points || [])
-                        .filter((point) => point?.t)
-                        .map((point) => [point.t, point.v == null ? null : point.v])
-                ),
                 valuesByDate: new Map(
                     (item.points || [])
                         .filter((point) => point?.t && point?.v != null)
                         .map((point) => [point.t, point.v])
                 ),
             }));
-            const allDates = [...new Set(
-                series.flatMap((item) => item.rawPoints.map((point) => point.date))
+            const dates = [...new Set(
+                series.flatMap((item) => [...item.valuesByDate.keys()])
             )].sort();
             return {
                 series,
-                allDateSet: new Set(allDates),
-                allDates,
-                dates: allDates,
+                dates,
+                timestamps: dates.map((date) => Date.parse(`${date}T00:00:00`)),
             };
         },
         [displayData?.weights]
@@ -875,10 +809,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         () =>
             usePersistentWeightsSelection
                 ? (weightsHover?.date || null)
-                : (weightsMouseInside && weightsHover?.date) || weightsPinnedDate,
+                : weightsPinnedDate,
         [
             usePersistentWeightsSelection,
-            weightsMouseInside,
             weightsHover?.date,
             weightsPinnedDate,
         ]
@@ -948,7 +881,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
             const ratio = offsetX / xaxis._length;
             const hoverTimestamp = rangeStart + (rangeEnd - rangeStart) * ratio;
-            return buildWeightsHoverStateFromTimestamp(weightsHoverData, hoverTimestamp);
+            const dateIndex = nearestTimestampIndex(weightsHoverData.timestamps, hoverTimestamp);
+            return buildWeightsHoverState(weightsHoverData.dates[dateIndex]);
         };
 
         const setHoverFromEvent = (event, fallbackOverride = null) => {
@@ -960,25 +894,19 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             setWeightsHover((current) => {
                 if (!next) {
                     if (!fallback) return null;
-                    if (weightsHoverStateEquals(current, fallback)) return current;
+                    if (current?.date === fallback.date) return current;
                     return fallback;
                 }
-                if (weightsHoverStateEquals(current, next)) return current;
+                if (current?.date === next.date) return current;
                 return next;
             });
         };
 
         const handleMove = (event) => {
-            if (!hasHoverPointer) return;
-            if (!weightsMouseInside) {
-                setWeightsMouseInside(true);
-            }
             if (weightsTouchMode) {
-                const next = readHoverStateFromEvent(event);
-                if (!next) return;
                 setWeightsTouchMode(false);
             }
-            setHoverFromEvent(event, weightsHover);
+            setHoverFromEvent(event);
         };
 
         const handleClick = (event) => {
@@ -996,8 +924,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleLeave = () => {
-            if (!hasHoverPointer || weightsTouchMode) return;
-            setWeightsMouseInside(false);
             setWeightsHover(
                 hasHoverPointer && weightsPinnedDate
                     ? buildWeightsHoverState(weightsPinnedDate)
@@ -1025,9 +951,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleTouchEnd = (event) => {
-            const hoverFromTouch =
-                readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current;
-            const next = hoverFromTouch || weightsHover;
+            const next =
+                readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current || weightsHover;
             suppressNextWeightsClickUntilRef.current = Date.now() + 750;
             lastTouchWeightsHoverRef.current = null;
             if (!next) {
@@ -1036,11 +961,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             if (hasHoverPointer && !weightsTouchMode) {
                 setWeightsPinnedDate((current) => (current === next.date ? null : next.date));
             } else {
-                if (hoverFromTouch && weightsHover?.date === next.date) {
-                    setWeightsPinnedDate(null);
-                    setWeightsHover(null);
-                    return;
-                }
                 setWeightsPinnedDate(null);
             }
             setWeightsHover(next);
@@ -1073,7 +993,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         hasHoverPointer,
         weightsHover,
         weightsHoverData,
-        weightsMouseInside,
         weightsPinnedDate,
         weightsTouchMode,
     ]);
@@ -1138,30 +1057,31 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         setWeightsPinnedDate(null);
         setWeightsHover(null);
         setWeightsSelectionMarker(null);
-        setWeightsMouseInside(false);
     }, [account?.id, range]);
 
     useEffect(() => {
+        const hasDate = (date) => Boolean(date && weightsHoverData.dates.includes(date));
+        let nextPinnedDate = weightsPinnedDate;
+
+        if (nextPinnedDate && !hasDate(nextPinnedDate)) {
+            nextPinnedDate = null;
+            setWeightsPinnedDate(null);
+        }
+
         const nextHoverDate = usePersistentWeightsSelection
-            ? (weightsHover?.date || null)
-            : weightsMouseInside
-                ? (weightsHover?.date || null)
-                : weightsPinnedDate
-                ? weightsPinnedDate
-                : weightsHover?.date
+            ? (hasDate(weightsHover?.date) ? weightsHover.date : null)
+            : nextPinnedDate
+                ? nextPinnedDate
+                : hasDate(weightsHover?.date)
                     ? weightsHover.date
                     : null;
 
-        const nextHover = usePersistentWeightsSelection || !weightsMouseInside
-            ? buildWeightsHoverStateFromData(weightsHoverData, nextHoverDate)
-            : buildWeightsHoverStateFromTimestamp(weightsHoverData, weightsHover?.timestamp);
+        const nextHover = buildWeightsHoverStateFromData(weightsHoverData, nextHoverDate);
         setWeightsHover((current) => (
             weightsHoverStateEquals(current, nextHover) ? current : nextHover
         ));
     }, [
         usePersistentWeightsSelection,
-        weightsMouseInside,
-        weightsHover?.timestamp,
         weightsHover?.date,
         weightsHoverData,
         weightsPinnedDate,
@@ -1605,133 +1525,86 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 zIndex: 2,
             }}
         >
-            <Stack
-                direction="row"
-                spacing={0.5}
-                alignItems="center"
-                justifyContent="space-between"
-                sx={{ mb: 0.75 }}
-            >
-                <Typography variant="caption" sx={{ display: "block", fontWeight: 700, minWidth: 0 }}>
-                    {formatHoverDate(weightsHover.date)}
-                    {hasHoverPointer && !weightsTouchMode && weightsPinnedDate === weightsHover.date
-                        ? " • Pinned"
-                        : ""}
-                </Typography>
-                {usePersistentWeightsSelection ? (
-                    <IconButton
-                        size="small"
-                        aria-label="Close holdings detail"
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            setWeightsPinnedDate(null);
-                            setWeightsHover(null);
-                            setWeightsSelectionMarker(null);
-                        }}
-                        sx={{
-                            ml: "auto",
-                            mr: -0.35,
-                            mt: -0.35,
-                            width: 20,
-                            height: 20,
-                            color: theme.palette.text.secondary,
-                        }}
-                    >
-                        <CloseRoundedIcon sx={{ fontSize: 14 }} />
-                    </IconButton>
-                ) : null}
-            </Stack>
-            <Typography variant="caption" sx={{ display: "none", fontWeight: 700, mb: 0.75 }}>
+            <Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: 0.75 }}>
                 {formatHoverDate(weightsHover.date)}
                 {hasHoverPointer && !weightsTouchMode && weightsPinnedDate === weightsHover.date
                     ? " • Pinned"
                     : ""}
             </Typography>
-            {displayWeightsHoverRows.length ? (
-                <>
-                    <Stack direction="row" spacing={0.4} sx={{ mb: 0.55 }}>
-                        {["weight", "stack"].map((mode) => {
-                            const active = weightsHoverSort === mode;
-                            return (
-                                <Button
-                                    key={mode}
-                                    size="small"
-                                    variant="text"
-                                    onClick={() => setWeightsHoverSort(mode)}
-                                    sx={{
-                                        minWidth: 0,
-                                        px: 0.55,
-                                        py: 0.1,
-                                        minHeight: 20,
-                                        borderRadius: 999,
-                                        fontSize: "0.62rem",
-                                        fontWeight: active ? 700 : 500,
-                                        lineHeight: 1.1,
-                                        letterSpacing: "0.02em",
-                                        textTransform: "none",
-                                        color: active ? theme.palette.primary.main : theme.palette.text.secondary,
-                                        backgroundColor: active
-                                            ? alpha(theme.palette.primary.main, 0.14)
-                                            : "transparent",
-                                        "&:hover": {
-                                            backgroundColor: active
-                                                ? alpha(theme.palette.primary.main, 0.2)
-                                                : alpha(theme.palette.text.primary, 0.06),
-                                        },
-                                    }}
-                                >
-                                    {mode === "weight" ? "Weight" : "Stack"}
-                                </Button>
-                            );
-                        })}
-                    </Stack>
-                    <Stack spacing={0.2}>
-                        {displayWeightsHoverRows.map((row) => (
-                            <Box
-                                key={row.name}
-                                sx={{
-                                    display: "grid",
-                                    gridTemplateColumns: "10px 1fr auto",
-                                    gap: 0.75,
-                                    alignItems: "center",
-                                    minWidth: 0,
-                                }}
-                            >
-                                <Box
-                                    sx={{
-                                        width: 10,
-                                        height: 10,
-                                        borderRadius: 0.5,
-                                        backgroundColor: row.color,
-                                    }}
-                                />
-                                <Typography
-                                    variant="caption"
-                                    sx={{
-                                        fontWeight: 500,
-                                        minWidth: 0,
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                    }}
-                                >
-                                    {row.name}
-                                </Typography>
-                                <Typography variant="caption" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                                    {formatWeightPercent(row.value)}
-                                </Typography>
-                            </Box>
-                        ))}
-                    </Stack>
-                </>
-            ) : (
-                <Typography
-                    variant="caption"
-                    sx={{ display: "block", color: theme.palette.text.secondary, fontStyle: "italic" }}
-                >
-                    No holdings
-                </Typography>
-            )}
+            <Stack direction="row" spacing={0.4} sx={{ mb: 0.55 }}>
+                {["weight", "stack"].map((mode) => {
+                    const active = weightsHoverSort === mode;
+                    return (
+                        <Button
+                            key={mode}
+                            size="small"
+                            variant="text"
+                            onClick={() => setWeightsHoverSort(mode)}
+                            sx={{
+                                minWidth: 0,
+                                px: 0.55,
+                                py: 0.1,
+                                minHeight: 20,
+                                borderRadius: 999,
+                                fontSize: "0.62rem",
+                                fontWeight: active ? 700 : 500,
+                                lineHeight: 1.1,
+                                letterSpacing: "0.02em",
+                                textTransform: "none",
+                                color: active ? theme.palette.primary.main : theme.palette.text.secondary,
+                                backgroundColor: active
+                                    ? alpha(theme.palette.primary.main, 0.14)
+                                    : "transparent",
+                                "&:hover": {
+                                    backgroundColor: active
+                                        ? alpha(theme.palette.primary.main, 0.2)
+                                        : alpha(theme.palette.text.primary, 0.06),
+                                },
+                            }}
+                        >
+                            {mode === "weight" ? "Weight" : "Stack"}
+                        </Button>
+                    );
+                })}
+            </Stack>
+            <Stack spacing={0.2}>
+                {displayWeightsHoverRows.map((row) => (
+                    <Box
+                        key={row.name}
+                        sx={{
+                            display: "grid",
+                            gridTemplateColumns: "10px 1fr auto",
+                            gap: 0.75,
+                            alignItems: "center",
+                            minWidth: 0,
+                        }}
+                    >
+                        <Box
+                            sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: 0.5,
+                                backgroundColor: row.color,
+                            }}
+                        />
+                        <Typography
+                            variant="caption"
+                            sx={{
+                                fontWeight: 500,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {row.name}
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                            {formatWeightPercent(row.value)}
+                        </Typography>
+                    </Box>
+                ))}
+            </Stack>
         </Box>
     ) : null;
 
