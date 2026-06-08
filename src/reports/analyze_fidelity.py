@@ -218,6 +218,102 @@ def _holding_today_gl_series(
     return adjusted_today_gl
 
 
+def _trade_aware_portfolio_returns(
+    prices: pd.DataFrame,
+    position_df: pd.DataFrame,
+    trades: pd.DataFrame,
+) -> pd.Series:
+    if prices.empty or position_df.empty:
+        return pd.Series(dtype=float)
+
+    aligned_prices = prices.copy()
+    aligned_prices.index = pd.to_datetime(aligned_prices.index).normalize()
+    aligned_positions = position_df.reindex(aligned_prices.index).fillna(0.0).copy()
+    aligned_positions.index = aligned_prices.index
+
+    previous_positions = aligned_positions.shift(1).fillna(0.0)
+    previous_prices = aligned_prices.shift(1)
+    ordered_trades = (
+        trades.reset_index(drop=True)
+        .reset_index()
+        .rename(columns={"index": "_trade_order"})
+        .sort_values(["Run Date", "_trade_order"], kind="stable")
+        if not trades.empty
+        else pd.DataFrame(columns=["Run Date", "symbol", "quantity", "price"])
+    )
+
+    trades_by_day_symbol: dict[tuple[pd.Timestamp, str], list[dict]] = {}
+    for _, row in ordered_trades.iterrows():
+        symbol = str(row.get("symbol") or "").strip()
+        quantity = float(row.get("quantity") or 0.0)
+        if not symbol or abs(quantity) <= SHARE_EPSILON:
+            continue
+
+        trade_day = pd.Timestamp(row["Run Date"]).normalize()
+        trades_by_day_symbol.setdefault((trade_day, symbol), []).append({
+            "quantity": quantity,
+            "price": float(row.get("price") or 0.0),
+        })
+
+    returns = pd.Series(0.0, index=aligned_prices.index, dtype=float)
+
+    for day in aligned_prices.index:
+        opening_value = 0.0
+        capital_deployed = 0.0
+        daily_pnl = 0.0
+
+        for symbol in aligned_prices.columns:
+            close_price = aligned_prices.at[day, symbol]
+            if pd.isna(close_price):
+                continue
+            close_price = float(close_price)
+
+            previous_quantity = float(previous_positions.at[day, symbol] or 0.0)
+            previous_close = previous_prices.at[day, symbol]
+            lots = []
+
+            if previous_quantity > SHARE_EPSILON and not pd.isna(previous_close):
+                previous_close = float(previous_close)
+                opening_value += previous_quantity * previous_close
+                lots.append({"qty": previous_quantity, "basis": previous_close})
+
+            for trade in trades_by_day_symbol.get((day, symbol), []):
+                quantity = float(trade["quantity"])
+                execution_price = float(trade["price"]) if float(trade["price"]) > SHARE_EPSILON else close_price
+
+                if quantity > SHARE_EPSILON:
+                    capital_deployed += quantity * execution_price
+                    lots.append({"qty": quantity, "basis": execution_price})
+                    continue
+
+                remaining_sell = -quantity
+                while remaining_sell > SHARE_EPSILON and lots:
+                    lot = lots[0]
+                    matched_qty = min(remaining_sell, lot["qty"])
+                    daily_pnl += matched_qty * (execution_price - lot["basis"])
+                    lot["qty"] -= matched_qty
+                    remaining_sell -= matched_qty
+                    if lot["qty"] <= SHARE_EPSILON:
+                        lots.pop(0)
+
+                if remaining_sell > SHARE_EPSILON:
+                    fallback_basis = (
+                        float(previous_close)
+                        if not pd.isna(previous_close)
+                        else execution_price
+                    )
+                    daily_pnl += remaining_sell * (execution_price - fallback_basis)
+
+            for lot in lots:
+                if lot["qty"] > SHARE_EPSILON:
+                    daily_pnl += lot["qty"] * (close_price - lot["basis"])
+
+        denominator = opening_value if opening_value > SHARE_EPSILON else capital_deployed
+        returns.loc[day] = daily_pnl / denominator if denominator > SHARE_EPSILON else 0.0
+
+    return returns
+
+
 def _write_short_history_report(output_path: Path, title: str, message: str):
     output_path.write_text(
         f"""
@@ -767,8 +863,7 @@ def main():
         position_df[(position_df.abs() < SHARE_EPSILON)] = 0.0
         value_df = position_df * prices
         weights = value_df.div(value_df.sum(axis=1), axis=0).fillna(0)
-        asset_returns = prices.pct_change().fillna(0)
-        returns = (weights.shift(1) * asset_returns).sum(axis=1).fillna(0)
+        returns = _trade_aware_portfolio_returns(prices, position_df, trades).fillna(0)
         cash_income_returns = statement_cash_income.div(value_df.sum(axis=1).shift(1).replace(0, np.nan)).fillna(0)
         returns = (returns + cash_income_returns).fillna(0)
         returns = _apply_inception_day_return_override(returns, value_df, lot_book, prices)

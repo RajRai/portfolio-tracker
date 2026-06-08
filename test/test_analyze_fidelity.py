@@ -15,6 +15,7 @@ from src.reports.analyze_fidelity import (
     _is_invalid_sell_post_quantity,
     _load_generated_accounts_index,
     _statement_cash_income_series,
+    _trade_aware_portfolio_returns,
     _write_quantstats_report,
     _upsert_accounts_index_entry,
     build_remaining_lot_book,
@@ -390,6 +391,56 @@ def test_holding_today_gl_series_uses_inception_logic_for_new_position_instead_o
     today_gl = _holding_today_gl_series(prices, quantities, lot_book)
 
     assert today_gl.loc["AAA"] == pytest.approx(0.1)
+
+
+def test_trade_aware_portfolio_returns_uses_execution_price_for_same_day_exit():
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 120.0]},
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    positions = pd.DataFrame(
+        {"AAA": [1.0, 0.0]},
+        index=prices.index,
+    )
+    trades = pd.DataFrame(
+        [
+            {
+                "Run Date": pd.Timestamp("2026-05-22"),
+                "symbol": "AAA",
+                "quantity": -1.0,
+                "price": 110.0,
+            }
+        ]
+    )
+
+    returns = _trade_aware_portfolio_returns(prices, positions, trades)
+
+    assert returns.loc[pd.Timestamp("2026-05-22")] == pytest.approx(0.1)
+
+
+def test_trade_aware_portfolio_returns_uses_buy_price_for_new_same_day_position():
+    prices = pd.DataFrame(
+        {"AAA": [100.0, 110.0]},
+        index=pd.to_datetime(["2026-05-21", "2026-05-22"]),
+    )
+    positions = pd.DataFrame(
+        {"AAA": [0.0, 1.0]},
+        index=prices.index,
+    )
+    trades = pd.DataFrame(
+        [
+            {
+                "Run Date": pd.Timestamp("2026-05-22"),
+                "symbol": "AAA",
+                "quantity": 1.0,
+                "price": 100.0,
+            }
+        ]
+    )
+
+    returns = _trade_aware_portfolio_returns(prices, positions, trades)
+
+    assert returns.loc[pd.Timestamp("2026-05-22")] == pytest.approx(0.1)
 
 
 def test_write_quantstats_report_falls_back_for_flat_short_history(tmp_path, monkeypatch):
