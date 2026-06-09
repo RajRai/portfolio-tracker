@@ -457,7 +457,7 @@ const withLivePerformance = (payload, liveReturns, liveInputs, quotes) => {
 };
 
 // ✅ Memoized performance table with scoped styles (beats MUI overrides)
-const PerformanceTable = memo(({ tableData, theme }) => (
+const PerformanceTable = memo(({ tableData, theme, benchmarkLabel }) => (
     <Box
         className="performance-table"
         sx={{
@@ -554,7 +554,7 @@ const PerformanceTable = memo(({ tableData, theme }) => (
             <tr>
                 <th>Period</th>
                 <th>Portfolio</th>
-                <th>Benchmark</th>
+                <th>{benchmarkLabel}</th>
                 <th>Excess</th>
             </tr>
             </thead>
@@ -634,6 +634,8 @@ const RangeSelector = memo(({ range, onChange, theme }) => (
 ));
 
 export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange }) {
+    const analyticsMaxWidth = 1200;
+    const performanceTableMaxWidth = 1200;
     const theme = useTheme();
     const isNarrow = useMediaQuery(theme.breakpoints.down("md"));
     const hasHoverPointer = useMediaQuery("(any-hover: hover) and (any-pointer: fine)");
@@ -790,6 +792,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         () => withLivePerformance(data, liveReturns, liveInputs, liveSnapshot.quotes),
         [data, liveReturns, liveInputs, liveSnapshot]
     );
+    const benchmarkTicker = displayData?.benchmark?.ticker || liveInputs?.benchmarkTicker || "SPY";
+    const benchmarkLabel = benchmarkTicker ? `Benchmark (${benchmarkTicker})` : "Benchmark";
     const weightsHoverData = useMemo(
         () => {
             const series = (displayData?.weights || []).map((item, index) => ({
@@ -1186,7 +1190,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                         y: arrY(payload.portfolio.equity).map((v) => v - 1),
                     },
                     {
-                        name: "Benchmark",
+                        name: benchmarkLabel,
                         type: "scatter",
                         mode: "lines",
                         x: arrX(payload.benchmark.equity),
@@ -1204,7 +1208,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                         y: arrY(payload.portfolio.daily),
                     },
                     {
-                        name: "Benchmark",
+                        name: benchmarkLabel,
                         type: "bar",
                         x: arrX(payload.benchmark.daily),
                         y: arrY(payload.benchmark.daily),
@@ -1671,25 +1675,30 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 pb: 6,
             }}
         >
-            <Box sx={{ mb: 0.75 }}>
-                <PerformanceTable tableData={tableData} theme={theme} />
+            <Box sx={{ maxWidth: performanceTableMaxWidth, mx: "auto", mb: 0.75 }}>
+                <Typography variant="caption" sx={{ display: "block", color: "text.secondary", mb: 0.75 }}>
+                    Benchmark: {benchmarkTicker}
+                </Typography>
+                <PerformanceTable tableData={tableData} theme={theme} benchmarkLabel={benchmarkLabel} />
             </Box>
 
-            {renderSection("Cumulative Performance vs Benchmark", charts.cum)}
-            {renderSection("Daily Returns", charts.daily)}
-            {renderSection("Daily Out/Under-Performance", charts.spreadDaily)}
-            {renderSection("Daily Alpha", charts.alphaDaily)}
-            {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
-            {renderSection("Cumulative Alpha", charts.alphaCum)}
-            {renderSection("Holdings Over Time (Weights)", charts.weights, {
-                overlay: (
-                    <>
-                        {weightsSelectionLine}
-                        {weightsHoverPanel}
-                    </>
-                ),
-                containerRef: weightsSectionRef,
-            })}
+            <Box sx={{ maxWidth: analyticsMaxWidth, mx: "auto" }}>
+                {renderSection("Cumulative Performance vs Benchmark", charts.cum)}
+                {renderSection("Daily Returns", charts.daily)}
+                {renderSection("Daily Out/Under-Performance", charts.spreadDaily)}
+                {renderSection("Daily Alpha", charts.alphaDaily)}
+                {renderSection("Cumulative Out/Under-Performance", charts.spreadCum)}
+                {renderSection("Cumulative Alpha", charts.alphaCum)}
+                {renderSection("Holdings Over Time (Weights)", charts.weights, {
+                    overlay: (
+                        <>
+                            {weightsSelectionLine}
+                            {weightsHoverPanel}
+                        </>
+                    ),
+                    containerRef: weightsSectionRef,
+                })}
+            </Box>
 
             <Box sx={{ mt: 8 }}>
                 <ReportFrame src={account.report} />

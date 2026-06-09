@@ -8,6 +8,7 @@ import PortfolioAbout from "./PortfolioAbout.jsx";
 import { umamiTrack } from "../umami.js";
 
 function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator = null }) {
+    const analyticsMaxWidth = 1200;
     const [tab, setTab] = useState("analytics");
     const [analyticsHeaderText, setAnalyticsHeaderText] = useState("");
     const [holdingsHeaderText, setHoldingsHeaderText] = useState("");
@@ -100,61 +101,68 @@ function AccountTabs({ account, liveStore, embedded = false, onOpenBacksimulator
                             px: { xs: 1.5, sm: 2 },
                             pt: 0.75,
                             pb: 0.25,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 1,
-                            flexWrap: "wrap",
                         }}
                     >
-                        <Box sx={{ minWidth: 0, flex: 1 }}>
-                            {headerText ? (
-                                <Typography
-                                    variant="caption"
-                                    sx={{
-                                        display: "block",
-                                        color: "text.secondary",
-                                        textAlign: "left",
-                                        whiteSpace: "nowrap",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        fontWeight: 500,
-                                    }}
-                                >
-                                    {headerText}
-                                </Typography>
-                            ) : null}
+                        <Box
+                            sx={{
+                                maxWidth: analyticsMaxWidth,
+                                mx: "auto",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 1,
+                                flexWrap: "wrap",
+                            }}
+                        >
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                                {headerText ? (
+                                    <Typography
+                                        variant="caption"
+                                        sx={{
+                                            display: "block",
+                                            color: "text.secondary",
+                                            textAlign: "left",
+                                            whiteSpace: "nowrap",
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                            fontWeight: 500,
+                                        }}
+                                    >
+                                        {headerText}
+                                    </Typography>
+                                ) : null}
+                            </Box>
+                            <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0, alignItems: "center" }}>
+                                <PortfolioAbout about={account.about} />
+                                {canOpenBacksimulator ? (
+                                    <Button
+                                        size="small"
+                                        variant="text"
+                                        endIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
+                                        onClick={() => {
+                                            onOpenBacksimulator?.();
+                                            umamiTrack("open_backsimulator_click", {
+                                                account_id: account?.id,
+                                                account_name: account?.name,
+                                            });
+                                        }}
+                                        sx={{
+                                            minWidth: 0,
+                                            px: 0.75,
+                                            py: 0.25,
+                                            flexShrink: 0,
+                                            color: "text.secondary",
+                                            textTransform: "none",
+                                            fontSize: "0.78rem",
+                                            fontWeight: 500,
+                                            whiteSpace: "nowrap",
+                                        }}
+                                    >
+                                        Backsim
+                                    </Button>
+                                ) : null}
+                            </Stack>
                         </Box>
-                        <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0, alignItems: "center" }}>
-                            <PortfolioAbout about={account.about} />
-                            {canOpenBacksimulator ? (
-                                <Button
-                                    size="small"
-                                    variant="text"
-                                    endIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
-                                    onClick={() => {
-                                        onOpenBacksimulator?.();
-                                        umamiTrack("open_backsimulator_click", {
-                                            account_id: account?.id,
-                                            account_name: account?.name,
-                                        });
-                                    }}
-                                    sx={{
-                                        minWidth: 0,
-                                        px: 0.75,
-                                        py: 0.25,
-                                        flexShrink: 0,
-                                        color: "text.secondary",
-                                        textTransform: "none",
-                                        fontSize: "0.78rem",
-                                        fontWeight: 500,
-                                        whiteSpace: "nowrap",
-                                    }}
-                                >
-                                    Backsim
-                                </Button>
-                            ) : null}
-                        </Stack>
                     </Box>
                 )}
                 {tab === "analytics" && (
