@@ -6,7 +6,9 @@ import {
     Stack,
     Divider,
     Box,
+    IconButton,
 } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import Papa from "papaparse";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -270,6 +272,12 @@ const getClientPoint = (event) => {
         };
     }
     return null;
+};
+
+const eventTargetsElement = (event, element) => {
+    if (!element || typeof Node === "undefined") return false;
+    const target = event?.target;
+    return target instanceof Node && element.contains(target);
 };
 
 const nearestTimestampIndex = (sortedValues, target) => {
@@ -639,6 +647,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const [weightsTouchMode, setWeightsTouchMode] = useState(false);
     const [weightsHoverSort, setWeightsHoverSort] = useState("weight");
     const weightsSectionRef = useRef(null);
+    const weightsHoverPanelRef = useRef(null);
     const suppressNextWeightsClickUntilRef = useRef(0);
     const lastTouchWeightsHoverRef = useRef(null);
     const liveSnapshot = useSyncExternalStore(
@@ -847,6 +856,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         const wrapper = weightsSectionRef.current;
         const buildWeightsHoverState = (hoverDate) =>
             buildWeightsHoverStateFromData(weightsHoverData, hoverDate);
+        const eventTargetsHoverPanel = (event) =>
+            eventTargetsElement(event, weightsHoverPanelRef.current);
 
         const readHoverStateFromEvent = (event) => {
             const layout = plot._fullLayout;
@@ -903,6 +914,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleMove = (event) => {
+            if (eventTargetsHoverPanel(event)) return;
             if (weightsTouchMode) {
                 setWeightsTouchMode(false);
             }
@@ -910,6 +922,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleClick = (event) => {
+            if (eventTargetsHoverPanel(event)) return;
             if (weightsTouchMode) {
                 setWeightsTouchMode(false);
             }
@@ -932,6 +945,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleTouchStart = (event) => {
+            if (eventTargetsHoverPanel(event)) return;
             if (!weightsTouchMode) {
                 setWeightsTouchMode(true);
             }
@@ -943,6 +957,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleTouchMove = (event) => {
+            if (eventTargetsHoverPanel(event)) return;
             const next = readHoverStateFromEvent(event);
             if (next) {
                 lastTouchWeightsHoverRef.current = next;
@@ -951,6 +966,10 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
 
         const handleTouchEnd = (event) => {
+            if (eventTargetsHoverPanel(event)) {
+                lastTouchWeightsHoverRef.current = null;
+                return;
+            }
             const next =
                 readHoverStateFromEvent(event) || lastTouchWeightsHoverRef.current || weightsHover;
             suppressNextWeightsClickUntilRef.current = Date.now() + 750;
@@ -966,7 +985,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             setWeightsHover(next);
         };
 
-        const handleTouchCancel = () => {
+        const handleTouchCancel = (event) => {
+            if (eventTargetsHoverPanel(event)) return;
             lastTouchWeightsHoverRef.current = null;
         };
 
@@ -1062,6 +1082,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     useEffect(() => {
         const hasDate = (date) => Boolean(date && weightsHoverData.dates.includes(date));
         let nextPinnedDate = weightsPinnedDate;
+        const nextActiveHoverDate = hasDate(weightsHover?.date) ? weightsHover.date : null;
 
         if (nextPinnedDate && !hasDate(nextPinnedDate)) {
             nextPinnedDate = null;
@@ -1069,12 +1090,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         }
 
         const nextHoverDate = usePersistentWeightsSelection
-            ? (hasDate(weightsHover?.date) ? weightsHover.date : null)
-            : nextPinnedDate
-                ? nextPinnedDate
-                : hasDate(weightsHover?.date)
-                    ? weightsHover.date
-                    : null;
+            ? nextActiveHoverDate
+            : nextActiveHoverDate || nextPinnedDate;
 
         const nextHover = buildWeightsHoverStateFromData(weightsHoverData, nextHoverDate);
         setWeightsHover((current) => (
@@ -1311,6 +1328,13 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         }
     };
 
+    const handleDismissWeightsHover = () => {
+        suppressNextWeightsClickUntilRef.current = Date.now() + 750;
+        lastTouchWeightsHoverRef.current = null;
+        setWeightsPinnedDate(null);
+        setWeightsHover(null);
+    };
+
     if (!account?.report) return null;
     if (!Plotly || !data) return <CircularProgress sx={{ mt: 4 }} />;
 
@@ -1506,6 +1530,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
     const weightsHoverPanel = weightsHover ? (
         <Box
+            ref={weightsHoverPanelRef}
             sx={{
                 position: isNarrow ? "static" : "absolute",
                 top: isNarrow ? "auto" : 12,
@@ -1525,12 +1550,27 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 zIndex: 2,
             }}
         >
-            <Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: 0.75 }}>
-                {formatHoverDate(weightsHover.date)}
-                {hasHoverPointer && !weightsTouchMode && weightsPinnedDate === weightsHover.date
-                    ? " • Pinned"
-                    : ""}
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 0.5, mb: 0.55 }}>
+                <Typography variant="caption" sx={{ display: "block", fontWeight: 700, minWidth: 0 }}>
+                    {formatHoverDate(weightsHover.date)}
+                    {hasHoverPointer && !weightsTouchMode && weightsPinnedDate === weightsHover.date
+                        ? " • Pinned"
+                        : ""}
+                </Typography>
+                <IconButton
+                    size="small"
+                    aria-label="Close holdings panel"
+                    onClick={handleDismissWeightsHover}
+                    sx={{
+                        mt: -0.1,
+                        mr: 0.15,
+                        p: 0.35,
+                        color: theme.palette.text.secondary,
+                    }}
+                >
+                    <CloseIcon sx={{ fontSize: 14 }} />
+                </IconButton>
+            </Box>
             <Stack direction="row" spacing={0.4} sx={{ mb: 0.55 }}>
                 {["weight", "stack"].map((mode) => {
                     const active = weightsHoverSort === mode;
