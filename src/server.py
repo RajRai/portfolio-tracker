@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from pathlib import Path
@@ -16,6 +17,12 @@ from flask import Flask, send_from_directory, jsonify, request, Response, stream
 import requests
 from websockets.sync.client import connect
 
+from src.posthog_analytics import (
+    build_backend_capture_payload,
+    build_posthog_public_config,
+    capture_backend_event_async,
+    forward_posthog_request,
+)
 from src.reports.model_portfolio import create_model_portfolio_report
 from src.tools import ToolDataError, algo_output_processor, earnings_calendar, market_cap_weights, stock_source
 from src.util import BASE_DIR
@@ -1137,13 +1144,45 @@ def ensure_live_services_started():
 @app.route("/api/accounts")
 def list_accounts():
     """Return list of all portfolio accounts and file URLs."""
+    started_at = time.perf_counter()
     ensure_live_services_started()
     try:
         data = _load_accounts()
     except Exception as e:
+        _track_backend_api_event("/api/accounts", started_at, success=False, status_code=500)
         return jsonify({"error": f"Could not read accounts.json: {e}"}), 500
 
+    _track_backend_api_event(
+        "/api/accounts",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={"account_count": len(data)},
+    )
     return jsonify(data)
+
+
+@app.route("/api/posthog/config")
+def posthog_config():
+    return jsonify(build_posthog_public_config())
+
+
+@app.route("/api/posthog/", defaults={"proxy_path": ""}, methods=["GET", "POST"])
+@app.route("/api/posthog/<path:proxy_path>", methods=["GET", "POST"])
+def posthog_proxy(proxy_path):
+    try:
+        body, status_code, headers = forward_posthog_request(
+            proxy_path,
+            method=request.method,
+            query_params=list(request.args.items(multi=True)),
+            body=request.get_data(),
+            headers=request.headers,
+        )
+    except RuntimeError:
+        return jsonify({"error": "PostHog is not configured"}), 404
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach PostHog"}), 502
+    return Response(body, status=status_code, headers=headers)
 
 
 @app.route("/api/live/stocks/stream")
@@ -1185,33 +1224,112 @@ def _tool_error_response(exc: ToolDataError):
     return jsonify({"error": str(exc)}), exc.status_code
 
 
+def _count_items(value) -> int:
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def _track_backend_api_event(
+    route: str,
+    started_at: float,
+    *,
+    success: bool,
+    status_code: int,
+    extra_properties: dict | None = None,
+):
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    payload = build_backend_capture_payload(
+        request.headers,
+        route=route,
+        success=success,
+        status_code=status_code,
+        duration_ms=duration_ms,
+        extra_properties=extra_properties,
+    )
+    capture_backend_event_async(payload)
+
+
 @app.route("/api/tools/stock-source", methods=["POST"])
 def tool_stock_source():
+    started_at = time.perf_counter()
+    body = _json_body()
+    analytics_props = {
+        "tool_name": "stock_source",
+        "source_type": body.get("sourceType") or "unknown",
+        "infer_historical_weights": bool(body.get("inferHistoricalWeights")),
+    }
     try:
         payload = stock_source(
-            _json_body(),
+            body,
             _load_accounts(),
             OUT_DIR,
             os.environ.get("POLYGON_API_KEY"),
         )
     except ToolDataError as exc:
+        _track_backend_api_event(
+            "/api/tools/stock-source",
+            started_at,
+            success=False,
+            status_code=exc.status_code,
+            extra_properties=analytics_props,
+        )
         return _tool_error_response(exc)
+    _track_backend_api_event(
+        "/api/tools/stock-source",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={
+            **analytics_props,
+            "ticker_count": _count_items(payload.get("tickers")),
+            "holding_count": _count_items(payload.get("holdings")),
+        },
+    )
     return jsonify(payload)
 
 
 @app.route("/api/tools/market-cap-weights", methods=["POST"])
 def tool_market_cap_weights():
+    started_at = time.perf_counter()
     body = _json_body()
+    analytics_props = {
+        "tool_name": "market_cap_weights",
+        "ticker_count": _count_items(body.get("tickers")),
+    }
     try:
         payload = market_cap_weights(body.get("tickers"), os.environ.get("POLYGON_API_KEY"))
     except ToolDataError as exc:
+        _track_backend_api_event(
+            "/api/tools/market-cap-weights",
+            started_at,
+            success=False,
+            status_code=exc.status_code,
+            extra_properties=analytics_props,
+        )
         return _tool_error_response(exc)
+    _track_backend_api_event(
+        "/api/tools/market-cap-weights",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={
+            **analytics_props,
+            "row_count": _count_items(payload.get("rows")),
+            "warnings_count": _count_items(payload.get("warnings")),
+        },
+    )
     return jsonify(payload)
 
 
 @app.route("/api/tools/earnings-calendar", methods=["POST"])
 def tool_earnings_calendar():
+    started_at = time.perf_counter()
     body = _json_body()
+    analytics_props = {
+        "tool_name": "earnings_calendar",
+        "ticker_count": _count_items(body.get("tickers")),
+        "has_start_date": bool(body.get("start")),
+        "has_end_date": bool(body.get("end")),
+    }
     try:
         payload = earnings_calendar(
             body.get("tickers"),
@@ -1220,13 +1338,38 @@ def tool_earnings_calendar():
             os.environ.get("POLYGON_API_KEY"),
         )
     except ToolDataError as exc:
+        _track_backend_api_event(
+            "/api/tools/earnings-calendar",
+            started_at,
+            success=False,
+            status_code=exc.status_code,
+            extra_properties=analytics_props,
+        )
         return _tool_error_response(exc)
+    _track_backend_api_event(
+        "/api/tools/earnings-calendar",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={
+            **analytics_props,
+            "event_count": _count_items(payload.get("events")),
+            "warnings_count": _count_items(payload.get("warnings")),
+        },
+    )
     return jsonify(payload)
 
 
 @app.route("/api/tools/algo-output-processor", methods=["POST"])
 def tool_algo_output_processor():
+    started_at = time.perf_counter()
     body = _json_body()
+    analytics_props = {
+        "tool_name": "algo_output_processor",
+        "include_portfolio_actions": bool(body.get("includePortfolioActions")),
+        "raw_text_length": len(str(body.get("rawText") or "")),
+        "portfolio_raw_text_length": len(str(body.get("portfolioRawText") or "")),
+    }
     try:
         payload = algo_output_processor(
             body.get("rawText"),
@@ -1235,16 +1378,63 @@ def tool_algo_output_processor():
             include_portfolio_actions=bool(body.get("includePortfolioActions")),
         )
     except ToolDataError as exc:
+        _track_backend_api_event(
+            "/api/tools/algo-output-processor",
+            started_at,
+            success=False,
+            status_code=exc.status_code,
+            extra_properties=analytics_props,
+        )
         return _tool_error_response(exc)
+    _track_backend_api_event(
+        "/api/tools/algo-output-processor",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={
+            **analytics_props,
+            "warnings_count": _count_items(payload.get("warnings")),
+        },
+    )
     return jsonify(payload)
 
 
 @app.route("/api/tools/model-portfolio-report", methods=["POST"])
 def tool_model_portfolio_report():
+    started_at = time.perf_counter()
+    body = _json_body()
+    benchmark = body.get("benchmark") if isinstance(body.get("benchmark"), dict) else {}
+    benchmark_holdings = benchmark.get("holdings") if isinstance(benchmark, dict) else []
+    analytics_props = {
+        "tool_name": "model_portfolio_report",
+        "portfolio_holding_count": _count_items(body.get("holdings")),
+        "benchmark_mode": benchmark.get("mode") or "unknown",
+        "benchmark_holding_count": _count_items(benchmark_holdings),
+        "portfolio_uses_historical_weights": bool(body.get("portfolioWeightHistory")),
+        "benchmark_uses_historical_weights": bool(benchmark.get("weightHistory")),
+    }
     try:
-        payload = create_model_portfolio_report(_json_body(), OUT_DIR)
+        payload = create_model_portfolio_report(body, OUT_DIR)
     except ToolDataError as exc:
+        _track_backend_api_event(
+            "/api/tools/model-portfolio-report",
+            started_at,
+            success=False,
+            status_code=exc.status_code,
+            extra_properties=analytics_props,
+        )
         return _tool_error_response(exc)
+    _track_backend_api_event(
+        "/api/tools/model-portfolio-report",
+        started_at,
+        success=True,
+        status_code=200,
+        extra_properties={
+            **analytics_props,
+            "warnings_count": _count_items(payload.get("warnings")),
+            "generated_account": bool(payload.get("account")),
+        },
+    )
     return jsonify(payload)
 
 # ============================================================

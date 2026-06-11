@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+from src import posthog_analytics
 from src import server
 
 
@@ -130,3 +132,127 @@ def test_load_accounts_sorts_using_canonical_account_order(monkeypatch, tmp_path
     accounts = server._load_accounts()
 
     assert [account["name"] for account in accounts] == ["Optical", "Cloud", "Retirement"]
+
+
+def test_posthog_config_endpoint_is_disabled_without_token(monkeypatch):
+    monkeypatch.delenv("POSTHOG_PROJECT_TOKEN", raising=False)
+    monkeypatch.delenv("POSTHOG_UI_HOST", raising=False)
+    monkeypatch.setenv("FLASK_ENV", "production")
+    monkeypatch.setenv("POSTHOG_DEBUG", "false")
+    monkeypatch.setenv("POSTHOG_RESPECT_DNT", "false")
+
+    response = server.app.test_client().get("/api/posthog/config", base_url="https://portfolio.test")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "enabled": False,
+        "apiHost": "/api/posthog",
+        "projectToken": "",
+        "uiHost": "https://us.posthog.com",
+        "debug": False,
+        "respectDnt": False,
+    }
+
+
+def test_posthog_config_endpoint_can_enable_respect_dnt(monkeypatch):
+    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_test")
+    monkeypatch.setenv("POSTHOG_RESPECT_DNT", "true")
+
+    response = server.app.test_client().get("/api/posthog/config")
+
+    assert response.status_code == 200
+    assert response.get_json()["respectDnt"] is True
+
+
+def test_posthog_proxy_forwards_requests(monkeypatch):
+    captured = {}
+
+    def fake_request(method, url, params=None, data=None, headers=None, allow_redirects=None, timeout=None):
+        captured.update(
+            {
+                "method": method,
+                "url": url,
+                "params": params,
+                "data": data,
+                "headers": headers,
+                "allow_redirects": allow_redirects,
+                "timeout": timeout,
+            }
+        )
+        return SimpleNamespace(
+            status_code=202,
+            content=b'{"ok":true}',
+            headers={
+                "Content-Type": "application/json",
+                "Cache-Control": "no-store",
+                "X-Ignored": "skip-me",
+            },
+        )
+
+    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_test")
+    monkeypatch.setenv("POSTHOG_HOST", "https://eu.i.posthog.com")
+    monkeypatch.setattr(posthog_analytics.requests, "request", fake_request)
+
+    response = server.app.test_client().post(
+        "/api/posthog/decide/?v=3",
+        data=b'{"token":"x"}',
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "pytest",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {"ok": True}
+    assert captured == {
+        "method": "POST",
+        "url": "https://eu.i.posthog.com/decide/",
+        "params": [("v", "3")],
+        "data": b'{"token":"x"}',
+        "headers": {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "pytest",
+        },
+        "allow_redirects": False,
+        "timeout": (5, 30),
+    }
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_build_backend_capture_payload_keeps_anonymous_context(monkeypatch):
+    monkeypatch.setenv("POSTHOG_PROJECT_TOKEN", "phc_test")
+
+    payload = posthog_analytics.build_backend_capture_payload(
+        {
+            "X-PostHog-Distinct-Id": "anon-123",
+            "X-PostHog-Session-Id": "session-456",
+        },
+        route="/api/tools/model-portfolio-report",
+        success=True,
+        status_code=200,
+        duration_ms=187,
+        extra_properties={
+            "tool_name": "model_portfolio_report",
+            "portfolio_holding_count": 14,
+            "ignored": {"not": "json-safe"},
+        },
+    )
+
+    assert payload == {
+        "api_key": "phc_test",
+        "event": "backend_api_request",
+        "distinct_id": "anon-123",
+        "properties": {
+            "$process_person_profile": False,
+            "$session_id": "session-456",
+            "source": "backend",
+            "route": "/api/tools/model-portfolio-report",
+            "success": True,
+            "status_code": 200,
+            "duration_ms": 187,
+            "tool_name": "model_portfolio_report",
+            "portfolio_holding_count": 14,
+        },
+    }

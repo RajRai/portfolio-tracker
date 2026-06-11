@@ -7,6 +7,7 @@ import {
     Select,
     Stack,
 } from "@mui/material";
+import { getAnalyticsRequestHeaders } from "../umami.js";
 
 export const splitTickers = (value) =>
     String(value || "")
@@ -21,9 +22,13 @@ export const formatPercent = (value) =>
     value == null ? "" : `${(Number(value) * 100).toFixed(2)}%`;
 
 export async function postJson(url, body) {
+    const analyticsHeaders = await getAnalyticsRequestHeaders();
     const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+            "Content-Type": "application/json",
+            ...analyticsHeaders,
+        },
         body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));

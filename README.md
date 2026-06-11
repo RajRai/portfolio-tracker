@@ -18,6 +18,20 @@ echo "POLYGON_API_KEY=your_api_key_here" > .env
 
 Alternatively, you can export it inline when running the container.
 
+Optional PostHog setup:
+
+```bash
+cat <<'EOF' >> .env
+POSTHOG_PROJECT_TOKEN=phc_your_project_token
+POSTHOG_HOST=https://us.i.posthog.com
+POSTHOG_UI_HOST=https://us.posthog.com
+POSTHOG_RESPECT_DNT=false
+EOF
+```
+
+The frontend reads its PostHog settings from Flask at runtime and sends analytics to the same-origin `/api/posthog/*` proxy, so you do not need separate client-side env files or CORS exceptions.
+If you want the SDK to honor the browser's Do Not Track setting, set `POSTHOG_RESPECT_DNT=true`. The default here is `false` so analytics doesn't silently disable itself in browsers that send DNT.
+
 ---
 
 **3. Prepare your data directory**

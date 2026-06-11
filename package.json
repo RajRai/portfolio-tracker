@@ -9,6 +9,11 @@
     "start:api": "concurrently -k -n watch,api \"npm run start:watch\" \"npm run start:flask\"",
     "start:flask": "set FLASK_ENV=development&& set PYTHONIOENCODING=utf-8&& set PYTHONPATH=.&& venv\\Scripts\\python.exe -m flask --app src.server run --debug --host 0.0.0.0 --port 8000",
     "start:watch": "set PYTHONPATH=.&& set PYTHONIOENCODING=utf-8&& venv\\Scripts\\python.exe -m src.reports.watch",
-    "start:web": "npm --prefix client run dev -- --host 0.0.0.0"
+    "start:web": "npm --prefix client run dev -- --host 0.0.0.0",
+
+    "docker:build": "docker build -t docker.rajrai.net/portfolio-tracker:latest .",
+    "docker:push": "docker push docker.rajrai.net/portfolio-tracker:latest",
+    "docker:publish": "npm run docker:build && npm run docker:push",
+    "docker:start": "docker rm -f portfolio-tracker && docker run --name portfolio-tracker --env-file .env.prod -p 5000:8000 docker.rajrai.net/portfolio-tracker:latest"
   }
 }

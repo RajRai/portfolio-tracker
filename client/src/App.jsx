@@ -27,7 +27,7 @@ import ModelPortfolioToolPage from "./components/ModelPortfolioToolPage.jsx";
 import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
 import { deepClone } from "@mui/x-data-grid/internals";
-import { trackToolEvent, umamiTrack } from "./umami.js";
+import { getAnalyticsRequestHeaders, trackToolEvent, umamiTrack } from "./umami.js";
 
 const toNum = (v) => {
     if (v == null) return NaN;
@@ -142,9 +142,13 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        fetch("/api/accounts")
-            .then((r) => r.json())
-            .then(async (data) => {
+        let cancelled = false;
+
+        const loadAccounts = async () => {
+            try {
+                const analyticsHeaders = await getAnalyticsRequestHeaders();
+                const response = await fetch("/api/accounts", { headers: analyticsHeaders });
+                const data = await response.json();
                 const enriched = await Promise.all(
                     data.map(async (acc) => {
                         try {
@@ -172,6 +176,8 @@ export default function App() {
                     })
                 );
 
+                if (cancelled) return;
+
                 setAccounts(
                     enriched.map(({ liveHoldings, ...acc }) => acc)
                 );
@@ -192,11 +198,17 @@ export default function App() {
                 umamiTrack("accounts_loaded", {
                     count: enriched.length,
                 });
-            })
-            .catch(() => {
+            } catch {
+                if (cancelled) return;
                 setLoading(false);
                 umamiTrack("accounts_load_failed", {});
-            });
+            }
+        };
+
+        void loadAccounts();
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     useEffect(() => {

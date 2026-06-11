@@ -14,7 +14,7 @@ import {
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import { postJson } from "./toolsShared.jsx";
-import { serializeQuery, trackToolEvent } from "../umami.js";
+import { trackToolEvent } from "../umami.js";
 
 const EXAMPLE_TEXT = `ticker,targetBuyPrice,targetSellPrice
 AMD,53.44,73.48
@@ -59,11 +59,9 @@ export default function AlgoOutputProcessorPage() {
         setWarnings([]);
 
         trackToolEvent("algo_output_processor", "run_started", {
-            query: serializeQuery({
-                rawTextLength: rawText.length,
-                portfolioRawTextLength: portfolioRawText.length,
-                includePortfolioActions,
-            }),
+            raw_text_length: rawText.length,
+            portfolio_raw_text_length: portfolioRawText.length,
+            include_portfolio_actions: includePortfolioActions,
         });
 
         try {
@@ -71,11 +69,9 @@ export default function AlgoOutputProcessorPage() {
             setData(payload);
             setWarnings(payload.warnings || []);
             trackToolEvent("algo_output_processor", "run_completed", {
-                query: serializeQuery({
-                    rawTextLength: rawText.length,
-                    portfolioRawTextLength: portfolioRawText.length,
-                    includePortfolioActions,
-                }),
+                raw_text_length: rawText.length,
+                portfolio_raw_text_length: portfolioRawText.length,
+                include_portfolio_actions: includePortfolioActions,
                 price_row_count: payload.priceSignals?.summary?.total || 0,
                 portfolio_action_row_count: payload.portfolioActions?.summary?.total || 0,
             });
@@ -83,11 +79,9 @@ export default function AlgoOutputProcessorPage() {
             setError(err.message);
             setData(null);
             trackToolEvent("algo_output_processor", "run_failed", {
-                query: serializeQuery({
-                    rawTextLength: rawText.length,
-                    portfolioRawTextLength: portfolioRawText.length,
-                    includePortfolioActions,
-                }),
+                raw_text_length: rawText.length,
+                portfolio_raw_text_length: portfolioRawText.length,
+                include_portfolio_actions: includePortfolioActions,
                 error: err.message,
             });
         } finally {
