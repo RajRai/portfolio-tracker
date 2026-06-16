@@ -93,6 +93,65 @@ const WEIGHTS_COLOR_PALETTE = [
     "#F67280",
 ];
 
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const parseCalendarDate = (value) => {
+    if (typeof value !== "string") return null;
+    const match = value.match(DATE_ONLY_PATTERN);
+    if (!match) return null;
+    return {
+        year: Number(match[1]),
+        month: Number(match[2]),
+        day: Number(match[3]),
+    };
+};
+
+const toUtcNoonDate = (value) => {
+    const parsed = parseCalendarDate(value);
+    if (!parsed) return null;
+    return new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day, 12));
+};
+
+const toLocalNoonDate = (value) => {
+    const parsed = parseCalendarDate(value);
+    if (!parsed) return null;
+    return new Date(parsed.year, parsed.month - 1, parsed.day, 12);
+};
+
+const formatCalendarDate = (date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+    return [
+        date.getUTCFullYear(),
+        String(date.getUTCMonth() + 1).padStart(2, "0"),
+        String(date.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+};
+
+const addCalendarDays = (value, days) => {
+    const date = toUtcNoonDate(value);
+    if (!date) return value;
+    date.setUTCDate(date.getUTCDate() + days);
+    return formatCalendarDate(date);
+};
+
+const toPlotlyDateValue = (value) => {
+    const date = toUtcNoonDate(value);
+    return date ? date.toISOString() : value;
+};
+
+const toPlotlyTimestamp = (value) => {
+    if (value instanceof Date) return value.getTime();
+    const date = toUtcNoonDate(value);
+    if (date) return date.getTime();
+    const timestamp = Date.parse(String(value));
+    return Number.isFinite(timestamp) ? timestamp : NaN;
+};
+
+const toDisplayDate = (value) => {
+    const date = toLocalNoonDate(value) || new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+
 const upsertSeriesPoint = (series, point) => {
     if (!series?.length) return point ? [point] : [];
     const next = series.slice();
@@ -110,16 +169,15 @@ const rollForwardSeries = (series, asOfDate) => {
     const lastDate = next[next.length - 1]?.t;
     if (!lastDate || lastDate >= asOfDate) return next;
 
-    const current = new Date(`${lastDate}T00:00:00`);
-    const end = new Date(`${asOfDate}T00:00:00`);
-    current.setDate(current.getDate() + 1);
-
-    while (current <= end) {
+    for (
+        let currentDate = addCalendarDays(lastDate, 1);
+        currentDate <= asOfDate;
+        currentDate = addCalendarDays(currentDate, 1)
+    ) {
         next.push({
-            t: current.toISOString().slice(0, 10),
+            t: currentDate,
             v: next[next.length - 1]?.v ?? null,
         });
-        current.setDate(current.getDate() + 1);
     }
     return next;
 };
@@ -130,17 +188,17 @@ const carryLatestPointToDate = (series, asOfDate) => {
     if (!lastDate || lastDate >= asOfDate) return series.slice();
 
     const next = series.slice(0, -1);
-    const current = new Date(`${lastDate}T00:00:00`);
-    const end = new Date(`${asOfDate}T00:00:00`);
     const lastValue = series[series.length - 1]?.v ?? null;
-    current.setDate(current.getDate() + 1);
 
-    while (current <= end) {
+    for (
+        let currentDate = addCalendarDays(lastDate, 1);
+        currentDate <= asOfDate;
+        currentDate = addCalendarDays(currentDate, 1)
+    ) {
         next.push({
-            t: current.toISOString().slice(0, 10),
+            t: currentDate,
             v: lastValue,
         });
-        current.setDate(current.getDate() + 1);
     }
     return next;
 };
@@ -246,8 +304,8 @@ const withComputedAlpha = (payload) => {
 
 const formatHoverDate = (dateText) => {
     if (!dateText) return "";
-    const date = new Date(`${dateText}T00:00:00`);
-    if (Number.isNaN(date.getTime())) return dateText;
+    const date = toDisplayDate(dateText);
+    if (!date) return dateText;
     return new Intl.DateTimeFormat("en-US", {
         month: "short",
         day: "numeric",
@@ -811,7 +869,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
             return {
                 series,
                 dates,
-                timestamps: dates.map((date) => Date.parse(`${date}T00:00:00`)),
+                timestamps: dates.map((date) => toPlotlyTimestamp(date)),
             };
         },
         [displayData?.weights]
@@ -888,8 +946,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 return null;
             }
 
-            const rangeStart = Date.parse(String(xaxis.range[0]));
-            const rangeEnd = Date.parse(String(xaxis.range[1]));
+            const rangeStart = toPlotlyTimestamp(String(xaxis.range[0]));
+            const rangeEnd = toPlotlyTimestamp(String(xaxis.range[1]));
             if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeEnd <= rangeStart) {
                 return null;
             }
@@ -1037,9 +1095,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 return;
             }
 
-            const rangeStart = Date.parse(String(xaxis.range[0]));
-            const rangeEnd = Date.parse(String(xaxis.range[1]));
-            const selectionTs = Date.parse(`${weightsMarkerDate}T00:00:00`);
+            const rangeStart = toPlotlyTimestamp(String(xaxis.range[0]));
+            const rangeEnd = toPlotlyTimestamp(String(xaxis.range[1]));
+            const selectionTs = toPlotlyTimestamp(weightsMarkerDate);
             if (
                 !Number.isFinite(rangeStart) ||
                 !Number.isFinite(rangeEnd) ||
@@ -1124,12 +1182,6 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         };
     }, [headerText, onHeaderTextChange]);
 
-    const dateMinusDays = (d, n) => {
-        const dt = new Date(d);
-        dt.setDate(dt.getDate() - n);
-        return dt;
-    };
-
     const lastDate = (payload) => {
         const pools = [];
         if (payload.portfolio.equity.length) pools.push(payload.portfolio.equity);
@@ -1141,7 +1193,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const rangeToDays = (r) => ({ "1m": 30, "3m": 90, "6m": 180, "1y": 365 }[r] || 0);
 
     const buildChartSpecs = (payload) => {
-        const arrX = (p) => p.map((v) => v.t);
+        const arrX = (p) => p.map((v) => toPlotlyDateValue(v.t));
         const arrY = (p) => p.map((v) => v.v);
         const baseLayout = {
             paper_bgcolor: theme.palette.background.paper,
@@ -1161,7 +1213,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
         const weightsLineTraces = [];
         payload.weights.forEach((s, index) => {
-            const x = s.points.map((p) => p.t);
+            const x = s.points.map((p) => toPlotlyDateValue(p.t));
             const y = s.points.map((p) => p.v);
             const color = WEIGHTS_COLOR_PALETTE[index % WEIGHTS_COLOR_PALETTE.length];
 
@@ -1170,7 +1222,7 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
                 type: "scatter",
                 mode: "lines",
                 stackgroup: "one",
-                line: { width: 1, color },
+                line: { width: 1, color, shape: "hv" },
                 fillcolor: color,
                 x,
                 y,
@@ -1324,8 +1376,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         if (r === "all" || !end) {
             ids.forEach((el) => el && Plotly.relayout(el, { "xaxis.autorange": true }));
         } else {
-            const endDate = new Date(end);
-            const startDate = dateMinusDays(endDate, rangeToDays(r));
+            const endDate = toPlotlyDateValue(end);
+            const startDate = toPlotlyDateValue(addCalendarDays(end, -rangeToDays(r)));
             ids.forEach(
                 (el) => el && Plotly.relayout(el, { "xaxis.range": [startDate, endDate] })
             );
@@ -1343,12 +1395,12 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     if (!Plotly || !data) return <CircularProgress sx={{ mt: 4 }} />;
 
     // --- 📈 Robust performance comparison helpers ---
-    const ms = (d) => (d instanceof Date ? d.getTime() : new Date(d).getTime());
+    const ms = (d) => toPlotlyTimestamp(d);
 
     const fmtSince = (isoDateStr) => {
         if (!isoDateStr) return "";
-        const d = new Date(isoDateStr);
-        if (Number.isNaN(d.getTime())) return "";
+        const d = toDisplayDate(isoDateStr);
+        if (!d) return "";
         return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
     };
 
@@ -1407,7 +1459,8 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const ytdReturn = (series) => {
         if (!series?.length) return null;
         const endIdx = series.length - 1;
-        const endDate = new Date(series[endIdx].t);
+        const endDate = toDisplayDate(series[endIdx].t);
+        if (!endDate) return null;
         const jan1 = new Date(endDate.getFullYear(), 0, 1);
         const startIdx = idxOnOrAfter(series, jan1.getTime());
         if (startIdx < 0) return null;
@@ -1439,12 +1492,13 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     const eq = displayData.portfolio.equity || [];
     const availableDays = (() => {
         if (eq.length < 2) return 0;
-        const start = new Date(eq[0].t);
-        const end = new Date(eq[eq.length - 1].t);
+        const start = toDisplayDate(eq[0].t);
+        const end = toDisplayDate(eq[eq.length - 1].t);
+        if (!start || !end) return 0;
         return Math.floor((end - start) / (1000 * 60 * 60 * 24));
     })();
 
-    const lastEqDate = (() => (eq.length ? new Date(eq[eq.length - 1].t) : null))();
+    const lastEqDate = (() => (eq.length ? toDisplayDate(eq[eq.length - 1].t) : null))();
 
     const ytdDays = (() => {
         if (!lastEqDate) return null;

@@ -21,6 +21,18 @@ const normalizeTimestampMs = (value) => {
     return raw * 1000;
 };
 
+const MIN_REASONABLE_LIVE_TIMESTAMP_MS = Date.UTC(2000, 0, 1);
+const MAX_LIVE_TIMESTAMP_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_LIVE_TIMESTAMP_FUTURE_DRIFT_MS = 24 * 60 * 60 * 1000;
+
+const isReasonableLiveTimestampMs = (timestampMs, nowMs = Date.now()) => {
+    if (!Number.isFinite(timestampMs)) return false;
+    if (timestampMs < MIN_REASONABLE_LIVE_TIMESTAMP_MS) return false;
+    if (timestampMs < nowMs - MAX_LIVE_TIMESTAMP_AGE_MS) return false;
+    if (timestampMs > nowMs + MAX_LIVE_TIMESTAMP_FUTURE_DRIFT_MS) return false;
+    return true;
+};
+
 const formatCompactNyTimestamp = (timestampMs) => {
     const date = new Date(timestampMs);
     if (Number.isNaN(date.getTime())) return null;
@@ -71,10 +83,11 @@ export const resolveLiveQuotePrices = (quote, asOfDate = nyDateString()) => {
 export const buildCompactLiveLabel = (tickers, snapshot) => {
     if (!tickers?.length) return "";
     const delayNote = " (15m delayed)";
+    const nowMs = Date.now();
 
     const updatedTimes = tickers
         .map((ticker) => normalizeTimestampMs(snapshot?.quotes?.[ticker]?.updated))
-        .filter((value) => Number.isFinite(value));
+        .filter((value) => isReasonableLiveTimestampMs(value, nowMs));
 
     if (updatedTimes.length) {
         const label = formatCompactNyTimestamp(Math.max(...updatedTimes));
