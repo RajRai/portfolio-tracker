@@ -345,15 +345,15 @@ def test_create_model_portfolio_report_applies_start_date_market_cap_weighting_t
         if tuple(tickers) == ("AAA", "BBB"):
             return {
                 "rows": [
-                    {"ticker": "AAA", "weight": 0.8},
-                    {"ticker": "BBB", "weight": 0.2},
+                    {"ticker": "AAA", "weight": 0.8, "current_market_cap": 480, "latest_price": 12},
+                    {"ticker": "BBB", "weight": 0.2, "current_market_cap": 110, "latest_price": 22},
                 ],
                 "missing": [],
             }
         return {
             "rows": [
-                {"ticker": "BBB", "weight": 0.25},
-                {"ticker": "CCC", "weight": 0.75},
+                {"ticker": "BBB", "weight": 0.25, "current_market_cap": 110, "latest_price": 22},
+                {"ticker": "CCC", "weight": 0.75, "current_market_cap": 320, "latest_price": 32},
             ],
             "missing": [],
         }
@@ -385,8 +385,8 @@ def test_create_model_portfolio_report_applies_start_date_market_cap_weighting_t
 
     assert [call[0] for call in estimate_calls] == [("AAA", "BBB"), ("BBB", "CCC")]
     assert payload["warnings"] == [
-        "Portfolio weights were estimated from current market caps scaled to 2026-03-03 using the historical/current price ratio.",
-        "Benchmark weights were estimated from current market caps scaled to 2026-03-03 using the historical/current price ratio.",
+        "Portfolio weights were estimated from current market caps scaled on each holding's first available date using the historical/current price ratio. Holdings without prices stayed at 0% until they entered.",
+        "Benchmark weights were estimated from current market caps scaled on each holding's first available date using the historical/current price ratio. Holdings without prices stayed at 0% until they entered.",
     ]
 
     trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
@@ -438,7 +438,7 @@ def test_create_model_portfolio_report_falls_back_to_entered_weights_when_market
     )
 
     assert payload["warnings"] == [
-        "Portfolio kept the entered weights because start-date market cap weighting was unavailable for: AAA, BBB."
+        "Portfolio kept the entered weights because historical market cap weighting was unavailable for: AAA, BBB."
     ]
 
     trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
@@ -621,6 +621,143 @@ def test_create_model_portfolio_report_can_follow_full_historical_weight_path(mo
     assert interactive_payload["weights"][0]["name"] == "AAA"
     assert interactive_payload["weights"][1]["name"] == "BBB"
     assert trades["Trade Size (% of Account)"].tolist() == ["100.00%", "100.00%", "100.00%"]
+
+
+def test_create_model_portfolio_report_does_not_clip_start_for_pre_ipo_zero_weight_history_symbols(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 11.0, 12.0, 13.0],
+            "BBB": [None, None, 20.0, 21.0],
+            "VT": [100.0, 101.0, 102.0, 103.0],
+        },
+        index=pd.to_datetime(["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Historical Pre IPO",
+            "startDate": "2026-03-03",
+            "endDate": "2026-03-06",
+            "portfolioHistoryWindow": {
+                "startDate": "2026-03-03",
+                "endDate": "2026-03-06",
+            },
+            "portfolioWeightHistory": [
+                {
+                    "ticker": "AAA",
+                    "points": [
+                        {"date": "2026-03-03", "weight": 1.0},
+                        {"date": "2026-03-04", "weight": 1.0},
+                        {"date": "2026-03-05", "weight": 0.5},
+                        {"date": "2026-03-06", "weight": 0.5},
+                    ],
+                },
+                {
+                    "ticker": "BBB",
+                    "points": [
+                        {"date": "2026-03-03", "weight": 0.0},
+                        {"date": "2026-03-04", "weight": 0.0},
+                        {"date": "2026-03-05", "weight": 0.5},
+                        {"date": "2026-03-06", "weight": 0.5},
+                    ],
+                },
+            ],
+            "holdings": [
+                {"ticker": "AAA", "weight": 50},
+                {"ticker": "BBB", "weight": 50},
+            ],
+            "benchmark": {
+                "mode": "ticker",
+                "ticker": "VT",
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    assert payload["effectiveStartDate"] == "2026-03-03"
+    assert payload["effectiveEndDate"] == "2026-03-06"
+    assert payload["warnings"] == []
+    assert payload["rangeInfo"]["startLimitedBy"] == []
+    assert payload["rangeInfo"]["effectiveStartDate"] == "2026-03-03"
+
+
+def test_create_model_portfolio_report_market_cap_weighting_adds_symbols_when_they_first_get_prices(monkeypatch, tmp_path):
+    prices = pd.DataFrame(
+        {
+            "AAA": [10.0, 10.0, 10.0, 10.0],
+            "BBB": [None, None, 20.0, 20.0],
+            "VT": [100.0, 100.0, 100.0, 100.0],
+        },
+        index=pd.to_datetime(["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"]),
+    )
+
+    monkeypatch.setattr(model_portfolio, "get_polygon_prices", lambda symbols, start, end: prices[symbols].copy())
+    monkeypatch.setattr(model_portfolio, "get_polygon_dividends", lambda symbols, start, end: pd.DataFrame(columns=symbols))
+    monkeypatch.setattr(model_portfolio.qs.reports, "html", _fake_report_writer)
+    monkeypatch.setattr(
+        model_portfolio,
+        "estimate_market_cap_weights",
+        lambda tickers, latest_prices, as_of_prices, api_key=None: {
+            "rows": [
+                {"ticker": "AAA", "current_market_cap": 100.0, "latest_price": 10.0},
+                {"ticker": "BBB", "current_market_cap": 300.0, "latest_price": 20.0},
+            ],
+            "missing": [],
+        },
+    )
+
+    payload = model_portfolio.create_model_portfolio_report(
+        {
+            "reportName": "Market Cap Entry Dates",
+            "startDate": "2026-03-03",
+            "endDate": "2026-03-06",
+            "weightingMode": "market_cap_start",
+            "holdings": [
+                {"ticker": "AAA", "weight": 60},
+                {"ticker": "BBB", "weight": 40},
+            ],
+            "benchmark": {
+                "mode": "ticker",
+                "ticker": "VT",
+            },
+        },
+        out_dir=tmp_path,
+    )
+
+    trades_path = next((tmp_path / "tool-model-portfolios").glob("trades_*.csv"))
+    trades = pd.read_csv(trades_path)
+
+    assert payload["effectiveStartDate"] == "2026-03-03"
+    assert payload["warnings"] == [
+        "Portfolio weights were estimated from current market caps scaled on each holding's first available date using the historical/current price ratio. Holdings without prices stayed at 0% until they entered."
+    ]
+    assert trades.to_dict("records") == [
+        {
+            "Date": "2026-03-03",
+            "Ticker": "AAA",
+            "Action": "BUY",
+            "Trade Price ($)": 10.0,
+            "Trade Size (% of Account)": "100.00%",
+        },
+        {
+            "Date": "2026-03-05",
+            "Ticker": "AAA",
+            "Action": "SELL",
+            "Trade Price ($)": 10.0,
+            "Trade Size (% of Account)": "75.00%",
+        },
+        {
+            "Date": "2026-03-05",
+            "Ticker": "BBB",
+            "Action": "BUY",
+            "Trade Price ($)": 20.0,
+            "Trade Size (% of Account)": "75.00%",
+        },
+    ]
 
 
 def test_create_model_portfolio_report_allows_subsetting_within_common_history_window_for_strategy_and_benchmark_sources(monkeypatch, tmp_path):

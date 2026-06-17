@@ -121,6 +121,19 @@ def _portfolio_interactive_path(account: dict, out_dir: Path) -> Path | None:
 
 
 def _history_window_from_report_payload(payload: dict) -> dict | None:
+    weights_series = payload.get("weights") or []
+    weight_dates = sorted({
+        str(point.get("t"))
+        for series in weights_series
+        for point in (series.get("points") or [])
+        if point.get("t")
+    })
+    if weight_dates:
+        return {
+            "startDate": weight_dates[0],
+            "endDate": weight_dates[-1],
+        }
+
     meta = payload.get("meta") or {}
     start_date = meta.get("effective_start_date") or meta.get("requested_start_date")
     end_date = meta.get("effective_end_date") or meta.get("requested_end_date")
@@ -740,8 +753,11 @@ def estimate_market_cap_weights(tickers, latest_prices: dict, as_of_prices: dict
         as_of_price = _to_float(as_of_prices.get(ticker))
         estimated_market_cap = None
         method = None
+        inactive = not (as_of_price and as_of_price > 0)
 
-        if current_market_cap is not None and latest_price and latest_price > 0 and as_of_price and as_of_price > 0:
+        if inactive:
+            note = "No start-date price - treated as 0% weight"
+        elif current_market_cap is not None and latest_price and latest_price > 0:
             estimated_market_cap = current_market_cap * as_of_price / latest_price
             method = f"{current_method} scaled by historical price ratio"
             total += estimated_market_cap
@@ -764,18 +780,22 @@ def estimate_market_cap_weights(tickers, latest_prices: dict, as_of_prices: dict
             "current_market_cap": current_market_cap,
             "latest_price": latest_price,
             "as_of_price": as_of_price,
+            "inactive": inactive,
         })
 
     for row in rows:
         if total > 0 and row["market_cap"] and row["market_cap"] > 0:
             row["weight"] = row["market_cap"] / total
+        elif total > 0 and row.get("inactive"):
+            row["weight"] = 0.0
 
     rows.sort(key=lambda row: row["weight"] or -1, reverse=True)
     return {
         "tickers": normalized,
         "total_market_cap": total if total > 0 else None,
         "rows": rows,
-        "missing": [row["ticker"] for row in rows if row["weight"] is None],
+        "missing": [row["ticker"] for row in rows if row["weight"] is None and not row.get("inactive")],
+        "inactive": [row["ticker"] for row in rows if row.get("inactive")],
     }
 
 

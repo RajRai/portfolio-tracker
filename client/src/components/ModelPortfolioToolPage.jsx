@@ -210,7 +210,7 @@ function WeightInputSection({
                         onChange={(event) => onUseMarketCapWeightsChange(event.target.checked)}
                     />
                 }
-                label="Use market cap weights at the start date when available"
+                label="Use historical market cap weights when available"
             />
 
             {onRebalancePeriodChange ? (
@@ -242,7 +242,7 @@ function WeightInputSection({
 
             {useMarketCapWeights && (
                 <Alert severity="info" sx={{ mt: 1.5 }}>
-                    The weights you typed are only a fallback here. When possible, this will estimate start-date market caps and use those instead.
+                    The weights you typed are only a fallback here. When possible, this will estimate historical market-cap weights and let new holdings enter once they have price history.
                 </Alert>
             )}
 

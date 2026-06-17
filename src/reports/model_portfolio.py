@@ -169,6 +169,203 @@ def _weight_history_frame(value) -> pd.DataFrame | None:
     return history
 
 
+def _active_weight_history_symbols(weight_history: pd.DataFrame | None, date: pd.Timestamp) -> list[str]:
+    if weight_history is None:
+        return []
+
+    history = weight_history[weight_history.index <= date]
+    if history.empty:
+        return []
+
+    row = history.iloc[-1].clip(lower=0).fillna(0.0)
+    total = float(row.sum())
+    if total <= 0:
+        return []
+
+    normalized = row / total
+    return [symbol for symbol, value in normalized.items() if float(value) > SHARE_EPSILON]
+
+
+def _symbols_missing_on_date(prices: pd.DataFrame, date: pd.Timestamp, symbols: list[str]) -> list[str]:
+    if date not in prices.index:
+        return list(symbols)
+
+    row = prices.loc[date]
+    return [symbol for symbol in symbols if symbol not in prices.columns or pd.isna(row[symbol])]
+
+
+def _first_supported_start_date(
+    prices: pd.DataFrame,
+    requested_start: pd.Timestamp,
+    static_symbol_groups: list[list[str]],
+    historical_weight_groups: list[pd.DataFrame | None],
+    market_cap_symbol_groups: list[list[str]],
+) -> pd.Timestamp:
+    future_prices = prices[prices.index >= requested_start]
+    if future_prices.empty:
+        latest_available = prices.index.max() if not prices.empty else None
+        latest_text = (
+            f" Latest available market date was {pd.Timestamp(latest_available).strftime('%Y-%m-%d')}."
+            if latest_available is not None and not pd.isna(latest_available)
+            else ""
+        )
+        raise ToolDataError(
+            "No price history was found on or after the selected start date. "
+            "Try an earlier trading day."
+            f"{latest_text}",
+            400,
+        )
+
+    all_symbols = sorted({
+        symbol
+        for group in static_symbol_groups + market_cap_symbol_groups
+        for symbol in group
+    } | {
+        symbol
+        for history in historical_weight_groups
+        if history is not None
+        for symbol in history.columns
+    })
+
+    for date in future_prices.index:
+        feasible = True
+
+        for symbols in static_symbol_groups:
+            if symbols and _symbols_missing_on_date(prices, date, symbols):
+                feasible = False
+                break
+        if not feasible:
+            continue
+
+        for history in historical_weight_groups:
+            if history is None:
+                continue
+            active_symbols = _active_weight_history_symbols(history, date)
+            if not active_symbols or _symbols_missing_on_date(prices, date, active_symbols):
+                feasible = False
+                break
+        if not feasible:
+            continue
+
+        for symbols in market_cap_symbol_groups:
+            active_symbols = [symbol for symbol in symbols if not _symbols_missing_on_date(prices, date, [symbol])]
+            if not active_symbols:
+                feasible = False
+                break
+        if feasible:
+            return pd.Timestamp(date).normalize()
+
+    missing = [symbol for symbol in all_symbols if future_prices[symbol].dropna().empty]
+    if missing:
+        raise ToolDataError(
+            f"Missing price history on or after the start date for: {', '.join(missing)}",
+            400,
+        )
+    raise ToolDataError("No supported start date was found for the selected weights and symbols", 400)
+
+
+def _last_supported_end_date(
+    prices: pd.DataFrame,
+    requested_end: pd.Timestamp,
+    static_symbol_groups: list[list[str]],
+    historical_weight_groups: list[pd.DataFrame | None],
+    market_cap_symbol_groups: list[list[str]],
+) -> pd.Timestamp:
+    past_prices = prices[prices.index <= requested_end]
+    if past_prices.empty:
+        earliest_available = prices.index.min() if not prices.empty else None
+        earliest_text = (
+            f" Earliest available market date was {pd.Timestamp(earliest_available).strftime('%Y-%m-%d')}."
+            if earliest_available is not None and not pd.isna(earliest_available)
+            else ""
+        )
+        raise ToolDataError(
+            "No price history was found on or before the selected end date. "
+            "Try a later trading day."
+            f"{earliest_text}",
+            400,
+        )
+
+    all_symbols = sorted({
+        symbol
+        for group in static_symbol_groups
+        for symbol in group
+    } | {
+        symbol
+        for group in market_cap_symbol_groups
+        for symbol in group
+    } | {
+        symbol
+        for history in historical_weight_groups
+        if history is not None
+        for symbol in history.columns
+    })
+
+    for date in reversed(past_prices.index.tolist()):
+        feasible = True
+
+        for symbols in static_symbol_groups:
+            if symbols and _symbols_missing_on_date(prices, date, symbols):
+                feasible = False
+                break
+        if not feasible:
+            continue
+
+        for history in historical_weight_groups:
+            if history is None:
+                continue
+            active_symbols = _active_weight_history_symbols(history, date)
+            if not active_symbols or _symbols_missing_on_date(prices, date, active_symbols):
+                feasible = False
+                break
+        if not feasible:
+            continue
+
+        for symbols in market_cap_symbol_groups:
+            active_symbols = [symbol for symbol in symbols if not _symbols_missing_on_date(prices, date, [symbol])]
+            if not active_symbols:
+                feasible = False
+                break
+        if feasible:
+            return pd.Timestamp(date).normalize()
+
+    missing = [symbol for symbol in all_symbols if past_prices[symbol].dropna().empty]
+    if missing:
+        raise ToolDataError(
+            f"Missing price history on or before the end date for: {', '.join(missing)}",
+            400,
+        )
+    raise ToolDataError("No supported end date was found for the selected weights and symbols", 400)
+
+
+def _boundary_limiting_symbols_for_strategy(
+    prices: pd.DataFrame,
+    requested_date: pd.Timestamp,
+    static_symbol_groups: list[list[str]],
+    historical_weight_groups: list[pd.DataFrame | None],
+    market_cap_symbol_groups: list[list[str]],
+) -> list[str]:
+    if requested_date not in prices.index:
+        return []
+
+    limited_by: list[str] = []
+
+    for symbols in static_symbol_groups:
+        limited_by.extend(_symbols_missing_on_date(prices, requested_date, symbols))
+
+    for history in historical_weight_groups:
+        active_symbols = _active_weight_history_symbols(history, requested_date)
+        if active_symbols:
+            limited_by.extend(_symbols_missing_on_date(prices, requested_date, active_symbols))
+
+    for symbols in market_cap_symbol_groups:
+        available_symbols = [symbol for symbol in symbols if not _symbols_missing_on_date(prices, requested_date, [symbol])]
+        if not available_symbols:
+            limited_by.extend(_symbols_missing_on_date(prices, requested_date, symbols))
+
+    return list(dict.fromkeys(limited_by))
+
+
 def _parse_benchmark_config(benchmark: dict) -> dict:
     benchmark = benchmark or {}
     mode = str(benchmark.get("mode") or "ticker").strip().lower()
@@ -303,7 +500,12 @@ def _boundary_limiting_symbols(prices: pd.DataFrame, symbols: list[str], request
     ]
 
 
-def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_start: pd.Timestamp, effective_start: pd.Timestamp) -> str | None:
+def _start_date_warning(
+    prices: pd.DataFrame,
+    requested_start: pd.Timestamp,
+    effective_start: pd.Timestamp,
+    limiting_symbols: list[str],
+) -> str | None:
     if effective_start <= requested_start:
         return None
 
@@ -322,11 +524,10 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
             f"so the report starts on {effective_text}."
         )
 
-    missing_symbols = _boundary_limiting_symbols(prices, symbols, requested_start)
-    if missing_symbols:
+    if limiting_symbols:
         return (
             f"The report starts on {effective_text} because these symbols did not have "
-            f"price history on {requested_text}: {', '.join(missing_symbols)}."
+            f"price history on {requested_text}: {', '.join(limiting_symbols)}."
         )
 
     return (
@@ -335,7 +536,12 @@ def _start_date_warning(prices: pd.DataFrame, symbols: list[str], requested_star
     )
 
 
-def _end_date_warning(prices: pd.DataFrame, symbols: list[str], requested_end: pd.Timestamp, effective_end: pd.Timestamp) -> str | None:
+def _end_date_warning(
+    prices: pd.DataFrame,
+    requested_end: pd.Timestamp,
+    effective_end: pd.Timestamp,
+    limiting_symbols: list[str],
+) -> str | None:
     if effective_end >= requested_end:
         return None
 
@@ -354,11 +560,10 @@ def _end_date_warning(prices: pd.DataFrame, symbols: list[str], requested_end: p
             f"so the report ends on {effective_text}."
         )
 
-    missing_symbols = _boundary_limiting_symbols(prices, symbols, requested_end)
-    if missing_symbols:
+    if limiting_symbols:
         return (
             f"The report ends on {effective_text} because these symbols did not have "
-            f"price history on {requested_text}: {', '.join(missing_symbols)}."
+            f"price history on {requested_text}: {', '.join(limiting_symbols)}."
         )
 
     return (
@@ -375,13 +580,15 @@ def _symbol_range_rows(
     effective_end: pd.Timestamp,
     requested_start: pd.Timestamp,
     requested_end: pd.Timestamp,
+    start_limited_by: list[str],
+    end_limited_by: list[str],
 ) -> dict:
     portfolio_set = set(portfolio_symbols)
     benchmark_set = set(benchmark_symbols)
     ordered_symbols = list(dict.fromkeys(portfolio_symbols + benchmark_symbols))
     bounded_prices = prices[(prices.index >= requested_start) & (prices.index <= requested_end)]
-    start_limited_by = set(_boundary_limiting_symbols(prices, ordered_symbols, requested_start)) if effective_start > requested_start else set()
-    end_limited_by = set(_boundary_limiting_symbols(prices, ordered_symbols, requested_end)) if effective_end < requested_end else set()
+    start_limited_by = set(start_limited_by) if effective_start > requested_start else set()
+    end_limited_by = set(end_limited_by) if effective_end < requested_end else set()
     rows = []
 
     for symbol in ordered_symbols:
@@ -415,48 +622,91 @@ def _symbol_range_rows(
     }
 
 
-def _apply_start_date_market_cap_weights(
+def _build_market_cap_entry_weight_history(
     holdings: list[dict],
     prices: pd.DataFrame,
     current_prices: pd.DataFrame,
-    effective_start_date: pd.Timestamp,
     label: str,
-) -> tuple[list[dict], str]:
+) -> tuple[pd.DataFrame | None, str]:
     tickers = [holding["ticker"] for holding in holdings]
     latest_prices = {}
-    as_of_prices = {}
     for ticker in tickers:
         current_series = current_prices[ticker].dropna() if ticker in current_prices.columns else pd.Series(dtype=float)
         latest_prices[ticker] = current_series.iloc[-1] if not current_series.empty else None
-        as_of_prices[ticker] = prices.at[effective_start_date, ticker] if ticker in prices.columns else None
 
-    payload = estimate_market_cap_weights(tickers, latest_prices, as_of_prices)
+    payload = estimate_market_cap_weights(tickers, latest_prices, latest_prices)
     if payload["missing"]:
-        return holdings, (
-            f"{label} kept the entered weights because start-date market cap weighting was unavailable for: "
+        return None, (
+            f"{label} kept the entered weights because historical market cap weighting was unavailable for: "
             f"{', '.join(payload['missing'])}."
         )
 
-    weight_by_ticker = {
-        row["ticker"]: row["weight"]
+    current_market_cap_by_ticker = {
+        row["ticker"]: _to_float(row.get("current_market_cap"))
         for row in payload["rows"]
-        if row.get("weight") is not None
     }
-    if any(holding["ticker"] not in weight_by_ticker for holding in holdings):
-        return holdings, (
-            f"{label} kept the entered weights because start-date market cap weighting was incomplete."
-        )
-    weighted_holdings = [
-        {
-            "ticker": holding["ticker"],
-            "weight": weight_by_ticker[holding["ticker"]],
-        }
+    latest_price_by_ticker = {
+        row["ticker"]: _to_float(row.get("latest_price"))
+        for row in payload["rows"]
+    }
+    if any(
+        current_market_cap_by_ticker.get(holding["ticker"]) in (None, 0)
+        or latest_price_by_ticker.get(holding["ticker"]) in (None, 0)
         for holding in holdings
-    ]
-    return weighted_holdings, (
-        f"{label} weights were estimated from current market caps scaled to {effective_start_date.strftime('%Y-%m-%d')} "
-        "using the historical/current price ratio."
+    ):
+        return None, (
+            f"{label} kept the entered weights because historical market cap weighting was incomplete."
+        )
+
+    activation_dates = sorted({
+        pd.Timestamp(prices[ticker].dropna().index.min()).normalize()
+        for ticker in tickers
+        if ticker in prices.columns and not prices[ticker].dropna().empty
+    })
+    if not activation_dates:
+        return None, (
+            f"{label} kept the entered weights because none of the selected holdings had price history in the requested window."
+        )
+
+    scheduled_rows = []
+    price_frame = prices.reindex(columns=tickers)
+    for activation_date in activation_dates:
+        active_tickers = [
+            ticker
+            for ticker in tickers
+            if ticker in price_frame.columns and not pd.isna(price_frame.at[activation_date, ticker])
+        ]
+        if not active_tickers:
+            continue
+
+        scaled_caps = {}
+        for ticker in active_tickers:
+            current_market_cap = current_market_cap_by_ticker.get(ticker)
+            latest_price = latest_price_by_ticker.get(ticker)
+            as_of_price = _to_float(price_frame.at[activation_date, ticker])
+            if current_market_cap and current_market_cap > 0 and latest_price and latest_price > 0 and as_of_price and as_of_price > 0:
+                scaled_caps[ticker] = current_market_cap * as_of_price / latest_price
+
+        total_scaled_cap = sum(scaled_caps.values())
+        if total_scaled_cap <= 0:
+            continue
+
+        row = {ticker: 0.0 for ticker in tickers}
+        for ticker, scaled_cap in scaled_caps.items():
+            row[ticker] = scaled_cap / total_scaled_cap
+        scheduled_rows.append(pd.Series(row, name=activation_date, dtype=float))
+
+    if not scheduled_rows:
+        return None, (
+            f"{label} kept the entered weights because historical market cap weighting could not be estimated inside the requested window."
+        )
+
+    weight_history = pd.DataFrame(scheduled_rows).sort_index().fillna(0.0)
+    warning = (
+        f"{label} weights were estimated from current market caps scaled on each holding's first available date "
+        "using the historical/current price ratio. Holdings without prices stayed at 0% until they entered."
     )
+    return weight_history, warning
 
 
 def _rebalance_close_flags(index: pd.Index, rebalance_period: str) -> pd.Series:
@@ -559,6 +809,7 @@ def _build_weight_history_basket(
     weight_history: pd.DataFrame,
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
+    strategy_mode: str = "historical_weight_history",
 ) -> dict:
     symbols = list(weight_history.columns)
     basket_prices = prices.reindex(columns=symbols)
@@ -602,7 +853,7 @@ def _build_weight_history_basket(
         "weights_df": target_weights,
         "returns": returns,
         "basis": basis,
-        "strategy_mode": "historical_weight_history",
+        "strategy_mode": strategy_mode,
     }
 
 
@@ -735,7 +986,7 @@ def _current_weights_frame(basket: dict) -> pd.DataFrame:
 
 
 def _trade_history_frame(basket: dict, start_date: pd.Timestamp, holdings: list[dict]) -> pd.DataFrame:
-    if basket.get("strategy_mode") == "historical_weight_history":
+    if basket.get("strategy_mode") in {"historical_weight_history", "estimated_market_cap_history"}:
         rows = []
         previous_weights = pd.Series(0.0, index=basket["weights_df"].columns, dtype=float)
         for date, weights in basket["weights_df"].iterrows():
@@ -845,11 +1096,7 @@ def create_model_portfolio_report(
     benchmark_rebalance_period = _rebalance_period(body.get("benchmarkRebalancePeriod"))
     portfolio_holdings = _normalize_weighted_holdings(body.get("holdings"), "portfolio")
     portfolio_weighting_mode = _weighting_mode(body.get("weightingMode"))
-    portfolio_symbols = (
-        list(portfolio_weight_history.columns)
-        if portfolio_weight_history is not None
-        else [holding["ticker"] for holding in portfolio_holdings]
-    )
+    portfolio_symbols = [holding["ticker"] for holding in portfolio_holdings]
     benchmark_symbols = benchmark_config["symbols"]
 
     symbols = list(
@@ -858,14 +1105,6 @@ def create_model_portfolio_report(
         )
     )
     prices = _price_matrix(symbols, requested_start_date, requested_end_date)
-    effective_start_date = _first_common_start_date(prices, symbols, requested_start_date)
-    effective_end_date = _last_common_end_date(prices, symbols, requested_end_date)
-    if effective_end_date < effective_start_date:
-        raise ToolDataError("No common date range was found between the selected start and end dates", 400)
-
-    working_prices = prices[
-        (prices.index >= effective_start_date) & (prices.index <= effective_end_date)
-    ].copy().ffill()
     weighting_warnings = []
     needs_market_cap_weighting = (
         (
@@ -879,6 +1118,9 @@ def create_model_portfolio_report(
         )
     )
     current_prices = pd.DataFrame()
+    requested_window_prices = prices[
+        (prices.index >= requested_start_date) & (prices.index <= requested_end_date)
+    ].copy()
     if needs_market_cap_weighting:
         market_cap_symbols = list(
             dict.fromkeys(
@@ -891,28 +1133,102 @@ def create_model_portfolio_report(
             )
         )
         current_prices = _current_price_matrix(market_cap_symbols)
-    if portfolio_weighting_mode == "market_cap_start":
-        portfolio_holdings, portfolio_weighting_warning = _apply_start_date_market_cap_weights(
+
+    portfolio_market_cap_weight_history = None
+    if portfolio_weight_history is None and portfolio_weighting_mode == "market_cap_start":
+        portfolio_market_cap_weight_history, portfolio_weighting_warning = _build_market_cap_entry_weight_history(
             portfolio_holdings,
-            working_prices,
+            requested_window_prices,
             current_prices,
-            effective_start_date,
             "Portfolio",
         )
         weighting_warnings.append(portfolio_weighting_warning)
+    benchmark_market_cap_weight_history = None
     if (
         benchmark_config["mode"] == "portfolio"
         and benchmark_config.get("weight_history") is None
         and benchmark_config.get("weighting_mode") == "market_cap_start"
     ):
-        benchmark_config["holdings"], benchmark_weighting_warning = _apply_start_date_market_cap_weights(
+        benchmark_market_cap_weight_history, benchmark_weighting_warning = _build_market_cap_entry_weight_history(
             benchmark_config["holdings"],
-            working_prices,
+            requested_window_prices,
             current_prices,
-            effective_start_date,
             "Benchmark",
         )
         weighting_warnings.append(benchmark_weighting_warning)
+
+    portfolio_strategy_weight_history = (
+        portfolio_weight_history
+        if portfolio_weight_history is not None
+        else portfolio_market_cap_weight_history
+    )
+    benchmark_base_weight_history = (
+        benchmark_config.get("weight_history")
+        if benchmark_config["mode"] == "portfolio"
+        else None
+    )
+    benchmark_strategy_weight_history = (
+        benchmark_base_weight_history
+        if benchmark_base_weight_history is not None
+        else benchmark_market_cap_weight_history
+    )
+
+    static_symbol_groups: list[list[str]] = []
+    if portfolio_strategy_weight_history is None:
+        static_symbol_groups.append([holding["ticker"] for holding in portfolio_holdings])
+    if benchmark_config["mode"] == "ticker":
+        static_symbol_groups.append([benchmark_config["ticker"]])
+    elif benchmark_strategy_weight_history is None:
+        static_symbol_groups.append([holding["ticker"] for holding in benchmark_config["holdings"]])
+
+    historical_weight_groups = [
+        portfolio_strategy_weight_history,
+        benchmark_strategy_weight_history,
+    ]
+    effective_start_date = _first_supported_start_date(
+        prices,
+        requested_start_date,
+        static_symbol_groups,
+        historical_weight_groups,
+        [],
+    )
+    effective_end_date = _last_supported_end_date(
+        prices,
+        requested_end_date,
+        static_symbol_groups,
+        historical_weight_groups,
+        [],
+    )
+    if effective_end_date < effective_start_date:
+        raise ToolDataError("No common date range was found between the selected start and end dates", 400)
+
+    start_limited_by = (
+        _boundary_limiting_symbols_for_strategy(
+            prices,
+            requested_start_date,
+            static_symbol_groups,
+            historical_weight_groups,
+            [],
+        )
+        if effective_start_date > requested_start_date
+        else []
+    )
+    end_limited_by = (
+        _boundary_limiting_symbols_for_strategy(
+            prices,
+            requested_end_date,
+            static_symbol_groups,
+            historical_weight_groups,
+            [],
+        )
+        if effective_end_date < requested_end_date
+        else []
+    )
+
+    window_prices = prices[
+        (prices.index >= effective_start_date) & (prices.index <= effective_end_date)
+    ].copy()
+    working_prices = window_prices.ffill()
     dividends = get_polygon_dividends(
         symbols,
         working_prices.index.min().strftime("%Y-%m-%d"),
@@ -920,13 +1236,18 @@ def create_model_portfolio_report(
     )
     asset_total_returns = compute_total_return_returns(working_prices, dividends)
 
-    if portfolio_weight_history is not None:
+    if portfolio_strategy_weight_history is not None:
         portfolio_basket = _build_weight_history_basket(
             working_prices,
             asset_total_returns,
-            portfolio_weight_history,
+            portfolio_strategy_weight_history,
             effective_start_date,
             effective_end_date,
+            strategy_mode=(
+                "historical_weight_history"
+                if portfolio_weight_history is not None
+                else "estimated_market_cap_history"
+            ),
         )
     else:
         portfolio_basket = _build_buy_and_hold_basket(
@@ -943,13 +1264,18 @@ def create_model_portfolio_report(
             asset_total_returns,
             effective_start_date,
         )
-    elif benchmark_config.get("weight_history") is not None:
+    elif benchmark_strategy_weight_history is not None:
         benchmark_basket = _build_weight_history_basket(
             working_prices,
             asset_total_returns,
-            benchmark_config["weight_history"],
+            benchmark_strategy_weight_history,
             effective_start_date,
             effective_end_date,
+            strategy_mode=(
+                "historical_weight_history"
+                if benchmark_config.get("weight_history") is not None
+                else "estimated_market_cap_history"
+            ),
         )
     else:
         benchmark_basket = _build_buy_and_hold_basket(
@@ -998,7 +1324,11 @@ def create_model_portfolio_report(
         trade_history_description=(
             "Target weight changes inferred from the source portfolio history."
             if portfolio_basket.get("strategy_mode") == "historical_weight_history"
-            else "Synthetic opening buys used to seed the model portfolio."
+            else (
+                "Target weight changes inferred from historical market-cap entry dates."
+                if portfolio_basket.get("strategy_mode") == "estimated_market_cap_history"
+                else "Synthetic opening buys used to seed the model portfolio."
+            )
         ),
     )
 
@@ -1028,17 +1358,17 @@ def create_model_portfolio_report(
     warnings = []
     start_date_warning = _start_date_warning(
         prices,
-        symbols,
         requested_start_date,
         effective_start_date,
+        start_limited_by,
     )
     if start_date_warning:
         warnings.append(start_date_warning)
     end_date_warning = _end_date_warning(
         prices,
-        symbols,
         requested_end_date,
         effective_end_date,
+        end_limited_by,
     )
     if end_date_warning:
         warnings.append(end_date_warning)
@@ -1051,6 +1381,8 @@ def create_model_portfolio_report(
         effective_end_date,
         requested_start_date,
         requested_end_date,
+        start_limited_by,
+        end_limited_by,
     )
 
     return {

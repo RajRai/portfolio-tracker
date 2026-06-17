@@ -54,7 +54,7 @@ def test_portfolio_source_can_return_full_weight_history_and_history_window_from
 {
   "portfolio": {
     "daily": [
-      {"t": "2026-01-02", "v": 0.0},
+      {"t": "2026-01-03", "v": 0.0},
       {"t": "2026-01-05", "v": 0.01}
     ]
   },
@@ -397,6 +397,7 @@ def test_estimate_market_cap_weights_scales_current_market_caps_to_start_date(mo
     assert rows_by_ticker["MSFT"]["market_cap"] == pytest.approx(50)
     assert rows_by_ticker["MSFT"]["weight"] == pytest.approx(1 / 6)
     assert payload["missing"] == []
+    assert payload["inactive"] == []
 
 
 def test_earnings_calendar_uses_yfinance(monkeypatch):
