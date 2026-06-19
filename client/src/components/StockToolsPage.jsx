@@ -19,6 +19,10 @@ import {
 } from "@mui/material";
 import { SourcePicker, formatPercent, postJson, splitTickers } from "./toolsShared.jsx";
 import { serializeQuery, serializeTickerList, trackToolEvent } from "../umami.js";
+import {
+    buildEarningsCalendarFilename,
+    downloadEarningsCalendarIcs,
+} from "../lib/earningsCalendarIcs.js";
 
 const todayString = () => new Date().toISOString().slice(0, 10);
 
@@ -298,7 +302,7 @@ function MarketCapResults({ data, sourceHoldings }) {
     );
 }
 
-function EarningsResults({ data }) {
+function EarningsResults({ data, onExportCalendar }) {
     if (!data) return null;
 
     if (!data.events?.length) {
@@ -310,40 +314,56 @@ function EarningsResults({ data }) {
     }
 
     return (
-        <Table size="small">
-            <TableHead>
-            <TableRow>
-                <TableCell>Date</TableCell>
-                <TableCell>Ticker</TableCell>
-                <TableCell>Company</TableCell>
-                <TableCell>Time</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Fiscal</TableCell>
-                <TableCell align="right">EPS Est.</TableCell>
-                <TableCell align="right">EPS Actual</TableCell>
-                <TableCell align="right">Revenue Est.</TableCell>
-                <TableCell align="right">Revenue Actual</TableCell>
-            </TableRow>
-            </TableHead>
-            <TableBody>
-            {data.events.map((event, index) => (
-                <TableRow key={`${event.ticker}-${event.date}-${event.time || ""}-${index}`}>
-                    <TableCell>{event.date}</TableCell>
-                    <TableCell>{event.ticker}</TableCell>
-                    <TableCell>{event.company_name || ""}</TableCell>
-                    <TableCell>{event.time || ""}</TableCell>
-                    <TableCell>{event.date_status || ""}</TableCell>
-                    <TableCell>
-                        {[event.fiscal_period, event.fiscal_year].filter(Boolean).join(" ")}
-                    </TableCell>
-                    <TableCell align="right">{formatNumber(event.estimated_eps)}</TableCell>
-                    <TableCell align="right">{formatNumber(event.actual_eps)}</TableCell>
-                    <TableCell align="right">{formatCurrency(event.estimated_revenue)}</TableCell>
-                    <TableCell align="right">{formatCurrency(event.actual_revenue)}</TableCell>
+        <Stack spacing={1.5}>
+            <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                alignItems={{ xs: "flex-start", sm: "center" }}
+                justifyContent="space-between"
+            >
+                <Typography variant="body2" color="text.secondary">
+                    {data.events.length} earnings event{data.events.length === 1 ? "" : "s"} loaded.
+                </Typography>
+                <Button variant="outlined" onClick={onExportCalendar}>
+                    Add to Apple Calendar (.ics)
+                </Button>
+            </Stack>
+
+            <Table size="small">
+                <TableHead>
+                <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Ticker</TableCell>
+                    <TableCell>Company</TableCell>
+                    <TableCell>Time</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Fiscal</TableCell>
+                    <TableCell align="right">EPS Est.</TableCell>
+                    <TableCell align="right">EPS Actual</TableCell>
+                    <TableCell align="right">Revenue Est.</TableCell>
+                    <TableCell align="right">Revenue Actual</TableCell>
                 </TableRow>
-            ))}
-            </TableBody>
-        </Table>
+                </TableHead>
+                <TableBody>
+                {data.events.map((event, index) => (
+                    <TableRow key={`${event.ticker}-${event.date}-${event.time || ""}-${index}`}>
+                        <TableCell>{event.date}</TableCell>
+                        <TableCell>{event.ticker}</TableCell>
+                        <TableCell>{event.company_name || ""}</TableCell>
+                        <TableCell>{event.time || ""}</TableCell>
+                        <TableCell>{event.date_status || ""}</TableCell>
+                        <TableCell>
+                            {[event.fiscal_period, event.fiscal_year].filter(Boolean).join(" ")}
+                        </TableCell>
+                        <TableCell align="right">{formatNumber(event.estimated_eps)}</TableCell>
+                        <TableCell align="right">{formatNumber(event.actual_eps)}</TableCell>
+                        <TableCell align="right">{formatCurrency(event.estimated_revenue)}</TableCell>
+                        <TableCell align="right">{formatCurrency(event.actual_revenue)}</TableCell>
+                    </TableRow>
+                ))}
+                </TableBody>
+            </Table>
+        </Stack>
     );
 }
 
@@ -487,6 +507,24 @@ export default function StockToolsPage({ tool, accounts }) {
     const description = isEarnings
         ? "Load a portfolio or type tickers manually, then scan earnings dates."
         : "Load a portfolio or type tickers manually, then derive market-cap weights.";
+    const exportEarningsCalendar = () => {
+        if (!earningsData?.events?.length) return;
+
+        downloadEarningsCalendarIcs(earningsData.events, {
+            calendarName: "Portfolio Tracker Earnings Calendar",
+            fileName: buildEarningsCalendarFilename(earningsData),
+        });
+        trackToolEvent(toolEventName, "calendar_exported", {
+            selected_account_id: accountId || null,
+            has_loaded_source: Boolean(sourceSummary),
+            source_label: sourceSummary?.label || null,
+            query_tickers: serializeTickerList(earningsData.tickers || []),
+            query_ticker_count: (earningsData.tickers || []).length,
+            query_start_date: earningsData.start || null,
+            query_end_date: earningsData.end || null,
+            event_count: (earningsData.events || []).length,
+        });
+    };
 
     return (
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto", px: { xs: 1.5, sm: 3 }, py: 3 }}>
@@ -570,7 +608,7 @@ export default function StockToolsPage({ tool, accounts }) {
                     </Typography>
                 )}
                 {isEarnings ? (
-                    <EarningsResults data={earningsData} />
+                    <EarningsResults data={earningsData} onExportCalendar={exportEarningsCalendar} />
                 ) : (
                     <MarketCapResults data={marketCapData} sourceHoldings={sourceHoldings} />
                 )}
