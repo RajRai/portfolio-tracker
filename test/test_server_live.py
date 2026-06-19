@@ -45,26 +45,47 @@ def test_compute_live_snapshot_uses_prev_close_for_holdings_without_today_quote(
     assert snapshot["live_value_by_ticker"]["BBB"] == pytest.approx(100.0)
 
 
-def test_merge_quote_preserves_existing_valid_price_when_incoming_price_is_blank():
+def test_merge_quote_preserves_existing_valid_price_when_incoming_price_is_blank(monkeypatch):
+    monkeypatch.setattr(server, "_now_timestamp_ms", lambda: 1775678340000)
+
     merged = server._merge_quote(
-        {"price": 11.5, "prev_close": 10.0, "updated": 100},
-        {"price": None, "prev_close": 10.0, "updated": 101},
+        {"price": 11.5, "prev_close": 10.0, "updated": 1775678339000},
+        {"price": None, "prev_close": 10.0, "updated": 1775678340000},
     )
 
     assert merged["price"] == pytest.approx(11.5)
     assert merged["prev_close"] == pytest.approx(10.0)
-    assert merged["updated"] == 101
+    assert merged["updated"] == 1775678340000
+
+
+def test_merge_quote_keeps_last_valid_updated_when_incoming_timestamp_is_bogus(monkeypatch):
+    monkeypatch.setattr(server, "_now_timestamp_ms", lambda: 1775678340000)
+
+    merged = server._merge_quote(
+        {"price": 11.5, "prev_close": 10.0, "updated": 1775678339000},
+        {"updated": 0},
+    )
+
+    assert merged["price"] == pytest.approx(11.5)
+    assert merged["prev_close"] == pytest.approx(10.0)
+    assert merged["updated"] == 1775678339000
 
 
 def test_stream_trade_updated_at_uses_event_timestamp():
     assert server._stream_trade_updated_at({"t": 1775678340000}) == 1775678340000
-    assert server._stream_trade_updated_at({"sip_timestamp": "1775678340000000000"}) == "1775678340000000000"
+    assert server._stream_trade_updated_at({"sip_timestamp": "1775678340000000000"}) == 1775678340000
 
 
 def test_stream_trade_updated_at_falls_back_to_receive_time(monkeypatch):
     monkeypatch.setattr(server, "_now_timestamp_ms", lambda: 1775678340000)
 
     assert server._stream_trade_updated_at({"ev": "T", "sym": "AAA", "p": 10.0}) == 1775678340000
+
+
+def test_stream_trade_updated_at_ignores_bogus_event_timestamp(monkeypatch):
+    monkeypatch.setattr(server, "_now_timestamp_ms", lambda: 1775678340000)
+
+    assert server._stream_trade_updated_at({"ev": "T", "sym": "AAA", "p": 10.0, "t": 0}) == 1775678340000
 
 
 def test_fetch_stock_snapshots_ignores_zero_snapshot_price(monkeypatch):
@@ -93,6 +114,35 @@ def test_fetch_stock_snapshots_ignores_zero_snapshot_price(monkeypatch):
 
     assert quotes["AAA"]["price"] is None
     assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
+
+
+def test_fetch_stock_snapshots_drops_bogus_snapshot_updated(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tickers": [
+                    {
+                        "ticker": "AAA",
+                        "lastTrade": {},
+                        "min": {},
+                        "day": {},
+                        "prevDay": {"c": 10},
+                        "updated": 0,
+                    }
+                ]
+            }
+
+    monkeypatch.setenv("POLYGON_API_KEY", "dummy")
+    monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    quotes = server._fetch_stock_snapshots(["AAA"])
+
+    assert quotes["AAA"]["price"] is None
+    assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
+    assert quotes["AAA"]["updated"] is None
 
 
 def test_fetch_stock_snapshots_keeps_prior_day_last_trade_before_first_trade(monkeypatch):

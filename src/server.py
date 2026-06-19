@@ -46,6 +46,9 @@ POLYGON_DELAYED_STOCKS_WS_URL = os.environ.get(
 LIVE_POLL_SECONDS = 5
 LIVE_REPORT_REFRESH_SECONDS = int(os.environ.get("LIVE_REPORT_REFRESH_SECONDS", "5"))
 NY_TZ = ZoneInfo("America/New_York")
+# Polygon can occasionally surface placeholder timestamps in snapshots; discard them before they drive UI labels.
+MIN_REASONABLE_LIVE_TIMESTAMP_MS = int(datetime(2010, 1, 1, tzinfo=ZoneInfo("UTC")).timestamp() * 1000)
+MAX_LIVE_TIMESTAMP_FUTURE_DRIFT_MS = 24 * 60 * 60 * 1000
 
 app = Flask(
     __name__,
@@ -139,6 +142,44 @@ def _first_valid_price(*values) -> float | None:
     return None
 
 
+def _normalize_timestamp_ms(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(raw):
+        return None
+
+    abs_ts = abs(raw)
+    if abs_ts >= 10**17:
+        timestamp_ms = raw / 1_000_000
+    elif abs_ts >= 10**14:
+        timestamp_ms = raw / 1_000
+    elif abs_ts >= 10**11:
+        timestamp_ms = raw
+    else:
+        timestamp_ms = raw * 1000
+
+    if not math.isfinite(timestamp_ms):
+        return None
+    return int(timestamp_ms)
+
+
+def _normalize_live_updated(value, now_ms: int | None = None) -> int | None:
+    timestamp_ms = _normalize_timestamp_ms(value)
+    if timestamp_ms is None:
+        return None
+    if timestamp_ms < MIN_REASONABLE_LIVE_TIMESTAMP_MS:
+        return None
+    if now_ms is None:
+        now_ms = _now_timestamp_ms()
+    if timestamp_ms > now_ms + MAX_LIVE_TIMESTAMP_FUTURE_DRIFT_MS:
+        return None
+    return timestamp_ms
+
+
 def _resolve_live_price(quote: dict, as_of_date: str | None = None) -> float | None:
     price = _valid_price(quote.get("price"))
     prev_close = _valid_price(quote.get("prev_close"))
@@ -150,25 +191,12 @@ def _resolve_live_price(quote: dict, as_of_date: str | None = None) -> float | N
 
 
 def _timestamp_to_ny_date(value) -> str | None:
-    if value in (None, ""):
-        return None
-    try:
-        ts = int(value)
-    except (TypeError, ValueError):
+    timestamp_ms = _normalize_timestamp_ms(value)
+    if timestamp_ms is None:
         return None
 
-    abs_ts = abs(ts)
-    if abs_ts >= 10**17:
-        divisor = 1_000_000_000
-    elif abs_ts >= 10**14:
-        divisor = 1_000_000
-    elif abs_ts >= 10**11:
-        divisor = 1_000
-    else:
-        divisor = 1
-
     try:
-        dt = datetime.fromtimestamp(ts / divisor, tz=ZoneInfo("UTC")).astimezone(NY_TZ)
+        dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=ZoneInfo("UTC")).astimezone(NY_TZ)
     except (OverflowError, OSError, ValueError):
         return None
     return dt.strftime("%Y-%m-%d")
@@ -179,13 +207,9 @@ def _snapshot_price(item: dict) -> tuple[float | None, int | None]:
         price = _valid_price(source.get("p"))
         if price is None:
             price = _valid_price(source.get("c"))
-        updated = source.get("t")
         if price is None:
             continue
-        try:
-            updated_value = int(updated)
-        except (TypeError, ValueError):
-            updated_value = None
+        updated_value = _normalize_live_updated(source.get("t"))
         return price, updated_value
     return None, None
 
@@ -198,11 +222,13 @@ def _now_timestamp_ms() -> int:
     return int(datetime.now(ZoneInfo("UTC")).timestamp() * 1000)
 
 
-def _stream_trade_updated_at(event: dict) -> int | str:
+def _stream_trade_updated_at(event: dict) -> int:
     for key in ("t", "sip_timestamp", "participant_timestamp", "timestamp"):
         value = event.get(key)
         if value not in (None, ""):
-            return value
+            normalized = _normalize_live_updated(value)
+            if normalized is not None:
+                return normalized
     return _now_timestamp_ms()
 
 
@@ -222,9 +248,10 @@ def _merge_quote(existing: dict | None, incoming: dict | None) -> dict:
     if prev_close is not None:
         merged["prev_close"] = prev_close
 
-    updated = incoming.get("updated")
-    if updated is not None:
-        merged["updated"] = updated
+    if "updated" in incoming:
+        updated = _normalize_live_updated(incoming.get("updated"))
+        if updated is not None:
+            merged["updated"] = updated
 
     return merged
 
@@ -256,7 +283,7 @@ def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
             out[ticker] = {
                 "price": price,
                 "prev_close": prev_close,
-                "updated": price_updated or item.get("updated"),
+                "updated": price_updated if price_updated is not None else _normalize_live_updated(item.get("updated")),
             }
 
     return out

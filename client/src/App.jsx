@@ -83,7 +83,7 @@ const parseLiveHoldings = (csvText) =>
 
 const normalizeIncomingQuote = (quote, transport) => ({
     ...quote,
-    updated: transport === "stream" ? Date.now() : quote?.updated,
+    updated: quote?.updated ?? (transport === "stream" ? Date.now() : undefined),
 });
 
 const POLL_LIVE_MESSAGE = "Live prices: updating every 5 seconds";
