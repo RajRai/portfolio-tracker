@@ -142,7 +142,7 @@ def test_merge_statements_dedupes_overlapping_exports_from_same_source_account(t
     assert combined.loc[0, "Amount"] == 462.47
 
 
-def test_merge_statements_preserves_identical_rows_from_different_source_accounts(tmp_path):
+def test_merge_statements_dedupes_identical_rows_across_statement_filenames_within_folder(tmp_path):
     account_dir = tmp_path / "ACCOUNT"
     statements_dir = account_dir / "statements"
     statements_dir.mkdir(parents=True)
@@ -156,12 +156,12 @@ def test_merge_statements_preserves_identical_rows_from_different_source_account
         "\n".join(trade_rows),
         encoding="utf-8",
     )
-    (statements_dir / "History_for_Account_456.csv").write_text(
+    (statements_dir / "History_for_Account_123 (a5).csv").write_text(
         "\n".join(trade_rows),
         encoding="utf-8",
     )
 
     combined = pd.read_csv(merge_statements(account_dir))
 
-    assert len(combined) == 2
-    assert combined["Symbol"].tolist() == ["AMD", "AMD"]
+    assert len(combined) == 1
+    assert combined.loc[0, "Symbol"] == "AMD"

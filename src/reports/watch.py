@@ -1,4 +1,3 @@
-import re
 import subprocess
 import sys
 import time
@@ -91,27 +90,6 @@ def _clean_text(value) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
-def _statement_source_id(path: Path) -> str:
-    stem = path.stem.strip()
-
-    fidelity_match = re.match(
-        r"^(History_for_Account_.+?)(?: \(\d+\))?(?: - amended)?$",
-        stem,
-    )
-    if fidelity_match:
-        return fidelity_match.group(1)
-
-    schwab_match = re.match(r"^(.+?)_Transactions_\d{8}-\d{6}$", stem)
-    if schwab_match:
-        return schwab_match.group(1)
-
-    generic_match = re.match(r"^(.+?)(?: \(\d+\))?$", stem)
-    if generic_match:
-        return generic_match.group(1)
-
-    return stem
-
-
 def _canonicalize_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     for column in NUMERIC_COLUMNS:
         if column in df.columns:
@@ -198,7 +176,6 @@ def merge_statements(account_dir: Path):
         try:
             df = pd.read_csv(f)
             df = normalize_statement_df(df)
-            df["_Source Account"] = _statement_source_id(f)
             dfs.append(df)
         except Exception as e:
             print(f"⚠️ skipping {f}: {e}")
@@ -208,7 +185,7 @@ def merge_statements(account_dir: Path):
 
     combined = (
         pd.concat(dfs, ignore_index=True)
-        .drop_duplicates(subset=["_Source Account", *DEDUPLICATION_COLUMNS])
+        .drop_duplicates(subset=DEDUPLICATION_COLUMNS)
     )
 
     combined["Run Date"] = pd.to_datetime(combined["Run Date"], errors="coerce")
