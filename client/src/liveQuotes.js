@@ -33,6 +33,11 @@ const isReasonableLiveTimestampMs = (timestampMs, nowMs = Date.now()) => {
     return true;
 };
 
+export const normalizeLiveTimestampMs = (value, nowMs = Date.now()) => {
+    const timestampMs = normalizeTimestampMs(value);
+    return isReasonableLiveTimestampMs(timestampMs, nowMs) ? timestampMs : null;
+};
+
 const formatCompactNyTimestamp = (timestampMs) => {
     const date = new Date(timestampMs);
     if (Number.isNaN(date.getTime())) return null;
@@ -80,14 +85,41 @@ export const resolveLiveQuotePrices = (quote, asOfDate = nyDateString()) => {
     };
 };
 
+export const mergeLiveQuote = (
+    existingQuote,
+    incomingQuote,
+    transport,
+    streamFallbackUpdated = Date.now()
+) => {
+    const normalizedIncoming = { ...(incomingQuote || {}) };
+    const updated =
+        incomingQuote?.updated ?? (transport === "stream" ? streamFallbackUpdated : undefined);
+
+    if (updated !== undefined) {
+        normalizedIncoming.updated = updated;
+    } else {
+        delete normalizedIncoming.updated;
+    }
+
+    return {
+        ...(existingQuote || {}),
+        ...normalizedIncoming,
+    };
+};
+
 export const buildCompactLiveLabel = (tickers, snapshot) => {
     if (!tickers?.length) return "";
     const delayNote = " (15m delayed)";
     const nowMs = Date.now();
 
     const updatedTimes = tickers
-        .map((ticker) => normalizeTimestampMs(snapshot?.quotes?.[ticker]?.updated))
-        .filter((value) => isReasonableLiveTimestampMs(value, nowMs));
+        .map((ticker) => normalizeLiveTimestampMs(snapshot?.quotes?.[ticker]?.updated, nowMs))
+        .filter((value) => value != null);
+
+    const snapshotLastUpdated = normalizeLiveTimestampMs(snapshot?.lastUpdated, nowMs);
+    if (snapshotLastUpdated != null) {
+        updatedTimes.push(snapshotLastUpdated);
+    }
 
     if (updatedTimes.length) {
         const label = formatCompactNyTimestamp(Math.max(...updatedTimes));

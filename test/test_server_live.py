@@ -116,7 +116,13 @@ def test_fetch_stock_snapshots_ignores_zero_snapshot_price(monkeypatch):
     assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
 
 
-def test_fetch_stock_snapshots_drops_bogus_snapshot_updated(monkeypatch):
+def test_previous_market_close_timestamp_ms_skips_holiday(monkeypatch):
+    holiday_now = server.datetime(2026, 6, 19, 9, 30, tzinfo=server.NY_TZ)
+
+    assert server._previous_market_close_timestamp_ms(holiday_now) == 1781812800000
+
+
+def test_fetch_stock_snapshots_falls_back_to_previous_market_close_when_snapshot_has_no_timestamp(monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -137,12 +143,13 @@ def test_fetch_stock_snapshots_drops_bogus_snapshot_updated(monkeypatch):
 
     monkeypatch.setenv("POLYGON_API_KEY", "dummy")
     monkeypatch.setattr(server.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(server, "_previous_market_close_timestamp_ms", lambda now=None: 1781812800000)
 
     quotes = server._fetch_stock_snapshots(["AAA"])
 
     assert quotes["AAA"]["price"] is None
     assert quotes["AAA"]["prev_close"] == pytest.approx(10.0)
-    assert quotes["AAA"]["updated"] is None
+    assert quotes["AAA"]["updated"] == 1781812800000
 
 
 def test_fetch_stock_snapshots_keeps_prior_day_last_trade_before_first_trade(monkeypatch):

@@ -28,6 +28,7 @@ import StockToolsPage from "./components/StockToolsPage.jsx";
 import { ThemeSelector, NewThemeButton, ThemeEditorModal, useThemeManager } from "@rajrai/mui-theme-manager";
 import { deepClone } from "@mui/x-data-grid/internals";
 import { getAnalyticsRequestHeaders, trackToolEvent, umamiTrack } from "./umami.js";
+import { mergeLiveQuote, normalizeLiveTimestampMs } from "./liveQuotes.js";
 
 const toNum = (v) => {
     if (v == null) return NaN;
@@ -81,11 +82,6 @@ const parseLiveHoldings = (csvText) =>
         }))
         .filter((row) => row.ticker && !isNaN(row.quantity) && row.quantity > 0);
 
-const normalizeIncomingQuote = (quote, transport) => ({
-    ...quote,
-    updated: quote?.updated ?? (transport === "stream" ? Date.now() : undefined),
-});
-
 const POLL_LIVE_MESSAGE = "Live prices: updating every 5 seconds";
 const STREAM_LIVE_MESSAGE = "Live prices: updating live";
 const CONNECTING_LIVE_MESSAGE = "Live prices: connecting";
@@ -121,6 +117,7 @@ export default function App() {
             status: "off",
             message: "",
             quotes: {},
+            lastUpdated: null,
         };
         const listeners = new Set();
 
@@ -278,6 +275,7 @@ export default function App() {
             status: "connecting",
             message: CONNECTING_LIVE_MESSAGE,
             quotes: quotesRef.current,
+            lastUpdated: null,
         });
 
         const updateAccountReturns = () => {
@@ -356,11 +354,18 @@ export default function App() {
             if (!payload.quotes) return;
 
             const nextQuotes = { ...quotesRef.current };
+            const nowMs = Date.now();
+            let nextLastUpdated =
+                normalizeLiveTimestampMs(liveStore.getSnapshot().lastUpdated, nowMs);
             for (const [ticker, quote] of Object.entries(payload.quotes)) {
-                nextQuotes[ticker] = {
-                    ...nextQuotes[ticker],
-                    ...normalizeIncomingQuote(quote, payload.transport),
-                };
+                nextQuotes[ticker] = mergeLiveQuote(nextQuotes[ticker], quote, payload.transport, nowMs);
+                const mergedUpdated = normalizeLiveTimestampMs(nextQuotes[ticker]?.updated, nowMs);
+                if (mergedUpdated != null) {
+                    nextLastUpdated =
+                        nextLastUpdated == null
+                            ? mergedUpdated
+                            : Math.max(nextLastUpdated, mergedUpdated);
+                }
             }
             quotesRef.current = nextQuotes;
 
@@ -369,17 +374,20 @@ export default function App() {
                     status: "stream",
                     message: STREAM_LIVE_MESSAGE,
                     quotes: nextQuotes,
+                    lastUpdated: nextLastUpdated,
                 });
             } else if (payload.transport === "poll") {
                 liveStore.publish({
                     status: "poll",
                     message: POLL_LIVE_MESSAGE,
                     quotes: nextQuotes,
+                    lastUpdated: nextLastUpdated,
                 });
             } else {
                 liveStore.publish((prev) => ({
                     ...prev,
                     quotes: nextQuotes,
+                    lastUpdated: nextLastUpdated,
                 }));
             }
 

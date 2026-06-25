@@ -7,7 +7,7 @@ import queue
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from urllib.parse import urlencode
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -140,6 +140,86 @@ def _first_valid_price(*values) -> float | None:
         if price is not None:
             return price
     return None
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> date:
+    current = date(year, month, 1)
+    while current.weekday() != weekday:
+        current += timedelta(days=1)
+    current += timedelta(weeks=occurrence - 1)
+    return current
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        current = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        current = date(year, month + 1, 1) - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    current = date(year, month, day)
+    if current.weekday() == 5:
+        return current - timedelta(days=1)
+    if current.weekday() == 6:
+        return current + timedelta(days=1)
+    return current
+
+
+def _easter_sunday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _nyse_holidays(year: int) -> set[date]:
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday_of_month(year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday_of_month(year, 5, 0),     # Memorial Day
+        _observed_fixed_holiday(year, 7, 4),
+        _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+        _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
+        _observed_fixed_holiday(year, 12, 25),
+    }
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(year, 6, 19))
+    return holidays
+
+
+def _is_nyse_trading_day(value: date) -> bool:
+    return value.weekday() < 5 and value not in _nyse_holidays(value.year)
+
+
+def _previous_nyse_trading_day(value: date) -> date:
+    current = value - timedelta(days=1)
+    while not _is_nyse_trading_day(current):
+        current -= timedelta(days=1)
+    return current
+
+
+def _previous_market_close_timestamp_ms(now: datetime | None = None) -> int:
+    now = now.astimezone(NY_TZ) if now is not None else datetime.now(NY_TZ)
+    market_day = _previous_nyse_trading_day(now.date())
+    close_dt = datetime.combine(market_day, dt_time(16, 0), tzinfo=NY_TZ)
+    return int(close_dt.timestamp() * 1000)
 
 
 def _normalize_timestamp_ms(value) -> int | None:
@@ -283,8 +363,14 @@ def _fetch_stock_snapshots(tickers: list[str]) -> dict[str, dict]:
             out[ticker] = {
                 "price": price,
                 "prev_close": prev_close,
-                "updated": price_updated if price_updated is not None else _normalize_live_updated(item.get("updated")),
+                "updated": (
+                    price_updated
+                    if price_updated is not None
+                    else _normalize_live_updated(item.get("updated"))
+                ),
             }
+            if out[ticker]["updated"] is None and price is None and prev_close is not None:
+                out[ticker]["updated"] = _previous_market_close_timestamp_ms()
 
     return out
 
