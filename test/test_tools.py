@@ -180,6 +180,104 @@ AAPL,100,120
     assert payload["priceSignals"]["summary"]["total"] == 2
 
 
+def test_portfolio_ticker_parser_reads_fidelity_target_allocations_and_ignores_company_names():
+    assert tools._parse_portfolio_tickers(
+        """
+FORD MOTOR
+
+ F
+FORD MOTOR
+6.9 %
+
+7.1
+%
+Target allocation of F is 7.1 %
+
+Delete
+FIRST SOLAR
+
+ FSLR
+FIRST SOLAR
+6.9 %
+
+7.1
+%
+Target allocation of FSLR is 7.1 %
+""".strip()
+    ) == ["F", "FSLR"]
+
+
+def test_portfolio_ticker_parser_reads_symbol_tables_and_plain_lists():
+    assert tools._parse_portfolio_tickers(
+        """
+Symbol\tCurrent weight\tTarget weight\tAction
+F\t7.0 %\t7.1 %\tDelete
+BRK.B\t7.0 %\t7.1 %\tDelete
+""".strip()
+    ) == ["F", "BRK.B"]
+    assert tools._parse_portfolio_tickers("F\nT\nBRK.B") == ["F", "T", "BRK.B"]
+
+
+def test_portfolio_ticker_parser_rejects_unstructured_company_text():
+    with pytest.raises(tools.ToolDataError, match="Could not identify portfolio tickers"):
+        tools._parse_portfolio_tickers("FIRST SOLAR\n7.1 %\nDelete")
+
+
+def test_algo_output_processor_sells_fidelity_holdings_missing_from_algo(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_polygon_snapshot_quotes",
+        lambda tickers, api_key=None: {
+            "AAPL": {"livePrice": 110.0, "previousClose": 109.0, "priceSource": "prev_close"},
+        },
+    )
+
+    payload = tools.algo_output_processor(
+        raw_text="""
+ticker,targetBuyPrice,targetSellPrice
+AAPL,100,120
+""".strip(),
+        include_portfolio_actions=True,
+        portfolio_raw_text="""
+APPLE INC
+AAPL
+Target allocation of AAPL is 7.1 %
+FORD MOTOR
+F
+Target allocation of F is 7.1 %
+""".strip(),
+    )
+
+    assert payload["portfolioActions"]["groups"] == {
+        "buy": [],
+        "sell": ["F"],
+        "hold": ["AAPL"],
+    }
+    assert payload["portfolioActions"]["summary"] == {
+        "total": 2,
+        "buy": 0,
+        "sell": 1,
+        "hold": 1,
+        "unpriced": 0,
+    }
+    assert payload["portfolioActions"]["detectedPortfolioTickers"] == ["AAPL", "F"]
+    assert payload["portfolioActions"]["missingFromAlgo"] == ["F"]
+
+
+def test_algo_output_processor_does_not_sell_unpriced_algo_ticker_as_missing(monkeypatch):
+    monkeypatch.setattr(tools, "_fetch_polygon_snapshot_quotes", lambda tickers, api_key=None: {})
+
+    payload = tools.algo_output_processor(
+        raw_text="ticker,targetBuyPrice,targetSellPrice\nAAPL,100,120",
+        include_portfolio_actions=True,
+        portfolio_raw_text="AAPL",
+    )
+
+    assert payload["portfolioActions"]["groups"]["sell"] == []
+    assert payload["portfolioActions"]["missingFromAlgo"] == []
+    assert payload["portfolioActions"]["summary"]["unpriced"] == 1
+
+
 def test_algo_output_processor_can_parse_portfolio_weight_blocks():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(

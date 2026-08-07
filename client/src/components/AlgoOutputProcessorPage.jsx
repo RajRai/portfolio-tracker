@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
     Box,
@@ -13,7 +13,7 @@ import {
     Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import { postJson } from "./toolsShared.jsx";
+import { postJson, SourcePicker } from "./toolsShared.jsx";
 import { trackToolEvent } from "../umami.js";
 
 const EXAMPLE_TEXT = `ticker,targetBuyPrice,targetSellPrice
@@ -38,15 +38,91 @@ AGX
 DOCU
 FSLR`;
 
-export default function AlgoOutputProcessorPage() {
+const findDefaultPortfolioAccountId = (accounts) => {
+    if (!Array.isArray(accounts) || !accounts.length) return "";
+
+    const exactAlgo = accounts.find((account) => String(account?.id || "").toUpperCase() === "ALGO");
+    if (exactAlgo?.id) return exactAlgo.id;
+
+    const namedAlgo = accounts.find((account) => /algorithmic\s+garp/i.test(String(account?.name || "")));
+    if (namedAlgo?.id) return namedAlgo.id;
+
+    return accounts[0]?.id || "";
+};
+
+const formatPortfolioHoldingsText = (holdings) =>
+    (holdings || [])
+        .map((holding) => String(holding?.ticker || "").trim().toUpperCase())
+        .filter(Boolean)
+        .join("\n");
+
+export default function AlgoOutputProcessorPage({ accounts = [] }) {
+    const defaultPortfolioAccountId = useMemo(
+        () => findDefaultPortfolioAccountId(accounts),
+        [accounts]
+    );
     const [rawText, setRawText] = useState("");
     const [portfolioRawText, setPortfolioRawText] = useState("");
     const [includePortfolioActions, setIncludePortfolioActions] = useState(false);
+    const [portfolioAccountId, setPortfolioAccountId] = useState(defaultPortfolioAccountId);
+    const [portfolioSourceSummary, setPortfolioSourceSummary] = useState(null);
     const [data, setData] = useState(null);
     const [warnings, setWarnings] = useState([]);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    const [loadingPortfolioSource, setLoadingPortfolioSource] = useState(false);
     const showSplitResults = Boolean(data?.priceSignals && data?.portfolioActions);
+
+    useEffect(() => {
+        setPortfolioAccountId((current) => {
+            if (current && accounts.some((account) => account.id === current)) {
+                return current;
+            }
+            return defaultPortfolioAccountId;
+        });
+    }, [accounts, defaultPortfolioAccountId]);
+
+    const handlePortfolioAccountChange = (nextAccountId) => {
+        setPortfolioAccountId(nextAccountId);
+        setPortfolioSourceSummary((current) => (current?.id === nextAccountId ? current : null));
+    };
+
+    const loadPortfolioHoldings = async () => {
+        if (!portfolioAccountId) return;
+
+        setLoadingPortfolioSource(true);
+        setError("");
+        setWarnings([]);
+
+        trackToolEvent("algo_output_processor", "source_load_started", {
+            selected_account_id: portfolioAccountId,
+        });
+
+        try {
+            const payload = await postJson("/api/tools/stock-source", {
+                sourceType: "portfolio",
+                accountId: portfolioAccountId,
+            });
+            setPortfolioRawText(formatPortfolioHoldingsText(payload.holdings || []));
+            setPortfolioSourceSummary(payload.source || null);
+            setWarnings(payload.warnings || []);
+            setData(null);
+            trackToolEvent("algo_output_processor", "source_loaded", {
+                selected_account_id: portfolioAccountId,
+                loaded_ticker_count: (payload.tickers || []).length,
+                loaded_holding_count: (payload.holdings || []).length,
+                source_label: payload.source?.label || null,
+            });
+        } catch (err) {
+            setError(err.message);
+            trackToolEvent("algo_output_processor", "source_load_failed", {
+                selected_account_id: portfolioAccountId,
+                error: err.message,
+            });
+        } finally {
+            setLoadingPortfolioSource(false);
+        }
+    };
 
     const runProcessor = async () => {
         const query = {
@@ -122,16 +198,42 @@ export default function AlgoOutputProcessorPage() {
                     />
 
                     {includePortfolioActions && (
-                        <TextField
-                            fullWidth
-                            multiline
-                            minRows={10}
-                            label="Current portfolio holdings"
-                            value={portfolioRawText}
-                            onChange={(event) => setPortfolioRawText(event.target.value)}
-                            placeholder={PORTFOLIO_EXAMPLE_TEXT}
-                            helperText="We only check whether each algo ticker appears anywhere in this pasted dump."
-                        />
+                        <Stack spacing={1.5}>
+                            {!!accounts.length && (
+                                <Box>
+                                    <SourcePicker
+                                        accounts={accounts}
+                                        accountId={portfolioAccountId}
+                                        setAccountId={handlePortfolioAccountChange}
+                                        onLoad={loadPortfolioHoldings}
+                                        loading={loadingPortfolioSource}
+                                        label="Existing Portfolio"
+                                        buttonLabel="Load Holdings"
+                                    />
+                                    {loadingPortfolioSource && <LinearProgress sx={{ mt: 1.5 }} />}
+                                    {portfolioSourceSummary && (
+                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.25 }}>
+                                            Loaded holdings from {portfolioSourceSummary.label}.
+                                        </Typography>
+                                    )}
+                                </Box>
+                            )}
+
+                            <TextField
+                                fullWidth
+                                multiline
+                                minRows={10}
+                                label="Current portfolio holdings"
+                                value={portfolioRawText}
+                                onChange={(event) => setPortfolioRawText(event.target.value)}
+                                placeholder={PORTFOLIO_EXAMPLE_TEXT}
+                                helperText={
+                                    accounts.length
+                                        ? "Paste a Fidelity target-allocation dump, a Symbol table, or one ticker per line—or load a saved portfolio. Holdings absent from the algo output are sells."
+                                        : "Paste a Fidelity target-allocation dump, a Symbol table, or one ticker per line. Holdings absent from the algo output are sells."
+                                }
+                            />
+                        </Stack>
                     )}
 
                     <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
@@ -211,7 +313,7 @@ export default function AlgoOutputProcessorPage() {
                         {data.portfolioActions && (
                             <SignalSection
                                 title="Portfolio Actions"
-                                subtitle="Only buys names you do not hold and sells names you do."
+                                subtitle="Buys new targets and sells held names that reached their sell price or disappeared from the algo output."
                                 signals={data.portfolioActions}
                                 showUnpriced
                                 tone="warning"

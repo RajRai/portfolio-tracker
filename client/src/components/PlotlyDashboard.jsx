@@ -584,6 +584,28 @@ const PerformanceTable = memo(({ tableData, theme, benchmarkLabel }) => (
         color: ${theme.palette.text.primary} !important;
         font-weight: 600;
       }
+      .performance-table .excess-cell {
+        display: inline-flex;
+        flex-direction: row;
+        align-items: baseline;
+        justify-content: center;
+        gap: 6px;
+      }
+      .performance-table .excess-helper {
+        font-size: 0.76em;
+        line-height: 1.15;
+        color: ${theme.palette.text.secondary};
+        font-weight: 500;
+      }
+      .performance-table .alpha-pos {
+        color: ${theme.palette.success.main};
+      }
+      .performance-table .alpha-neg {
+        color: ${theme.palette.error.main};
+      }
+      .performance-table .alpha-flat {
+        color: ${theme.palette.text.secondary};
+      }
 
       /* ✅ Mobile density: shrink font + padding */
       @media (max-width: 600px) {
@@ -593,6 +615,9 @@ const PerformanceTable = memo(({ tableData, theme, benchmarkLabel }) => (
         .performance-table th,
         .performance-table td {
           padding: 6px 6px;
+        }
+        .performance-table .excess-cell {
+          gap: 4px;
         }
       }
 
@@ -613,11 +638,11 @@ const PerformanceTable = memo(({ tableData, theme, benchmarkLabel }) => (
                 <th>Period</th>
                 <th>Portfolio</th>
                 <th>{benchmarkLabel}</th>
-                <th>Excess</th>
+                <th>Excess (α)</th>
             </tr>
             </thead>
             <tbody>
-            {tableData.map(({ label, displayLabel, p, b, diff }) => (
+            {tableData.map(({ label, displayLabel, p, b, diff, alphaValue }) => (
                 <tr key={label}>
                     <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{displayLabel || label}</td>
                     <td className={p == null ? "" : p > 0 ? "gain" : "loss"}>
@@ -637,9 +662,28 @@ const PerformanceTable = memo(({ tableData, theme, benchmarkLabel }) => (
                                         : "excess-flat"
                         }
                     >
-                        {diff != null
-                            ? (diff > 0 ? "+" : "") + (diff * 100).toFixed(1) + "%"
-                            : "—"}
+                        <span className="excess-cell">
+                            <span>
+                                {diff != null
+                                    ? (diff > 0 ? "+" : "") + (diff * 100).toFixed(1) + "%"
+                                    : "—"}
+                            </span>
+                            {alphaValue != null ? (
+                                <span
+                                    className={
+                                        "excess-helper " + (
+                                            alphaValue > 0
+                                                ? "alpha-pos"
+                                                : alphaValue < 0
+                                                    ? "alpha-neg"
+                                                    : "alpha-flat"
+                                        )
+                                    }
+                                >
+                                    α {(alphaValue > 0 ? "+" : "") + (alphaValue * 100).toFixed(1)}%
+                                </span>
+                            ) : null}
+                        </span>
                     </td>
                 </tr>
             ))}
@@ -1479,6 +1523,39 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
         return periodReturn(equitySeries, 1);
     };
 
+    const compoundDailySeries = (dailySeries, startIdx = 0) => {
+        if (!dailySeries?.length || startIdx < 0 || startIdx >= dailySeries.length) return null;
+        let running = 1;
+        let hasValue = false;
+        for (let i = startIdx; i < dailySeries.length; i++) {
+            const value = dailySeries[i]?.v;
+            if (typeof value !== "number") continue;
+            running *= 1 + value;
+            hasValue = true;
+        }
+        return hasValue ? running - 1 : null;
+    };
+
+    const alphaPeriodReturn = (dailySeries, calendarDays) => {
+        if (!dailySeries?.length) return null;
+        const endMs = ms(dailySeries[dailySeries.length - 1].t);
+        const cutoff = new Date(endMs);
+        cutoff.setDate(cutoff.getDate() - calendarDays);
+        const startIdx = idxOnOrAfter(dailySeries, cutoff.getTime());
+        return compoundDailySeries(dailySeries, startIdx);
+    };
+
+    const alphaYtdReturn = (dailySeries) => {
+        if (!dailySeries?.length) return null;
+        const endDate = toDisplayDate(dailySeries[dailySeries.length - 1].t);
+        if (!endDate) return null;
+        const jan1 = new Date(endDate.getFullYear(), 0, 1);
+        const startIdx = idxOnOrAfter(dailySeries, jan1.getTime());
+        return compoundDailySeries(dailySeries, startIdx);
+    };
+
+    const alphaAllTimeReturn = (dailySeries) => compoundDailySeries(dailySeries, 0);
+
     // All-time return from first equity point to last
     const allTimeReturn = (series) => {
         if (!series?.length) return null;
@@ -1542,21 +1619,25 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
     // Compute table data
     const tableData = timeframes
         .map(([label, span]) => {
-            let p = null, b = null;
+            let p = null, b = null, alphaValue = null;
 
             if (label === "1D") {
                 p = oneDayReturn(displayData.portfolio.daily, displayData.portfolio.equity);
                 b = oneDayReturn(displayData.benchmark.daily, displayData.benchmark.equity);
+                alphaValue = oneDayReturn(displayData.alpha?.daily, null);
             } else if (label === "YTD") {
                 p = ytdReturn(displayData.portfolio.equity);
                 b = ytdReturn(displayData.benchmark.equity);
+                alphaValue = alphaYtdReturn(displayData.alpha?.daily);
             } else if (label === "ALL") {
                 p = allTimeReturn(displayData.portfolio.equity);
                 b = allTimeReturn(displayData.benchmark.equity);
+                alphaValue = alphaAllTimeReturn(displayData.alpha?.daily);
             } else if (typeof span === "number") {
                 if (availableDays >= Math.min(span, availableDays)) {
                     p = periodReturn(displayData.portfolio.equity, span);
                     b = periodReturn(displayData.benchmark.equity, span);
+                    alphaValue = alphaPeriodReturn(displayData.alpha?.daily, span);
                 }
             }
 
@@ -1564,9 +1645,9 @@ export default function PlotlyDashboard({ account, liveStore, onHeaderTextChange
 
             const displayLabel = label;
 
-            return { label, displayLabel, p, b, diff };
+            return { label, displayLabel, p, b, diff, alphaValue };
         })
-        .filter((row) => row.p != null || row.b != null || row.diff != null);
+        .filter((row) => row.p != null || row.b != null || row.diff != null || row.alphaValue != null);
 
     const weightsSelectionLine = weightsSelectionMarker ? (
         <Box

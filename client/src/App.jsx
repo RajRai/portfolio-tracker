@@ -631,7 +631,7 @@ export default function App() {
                     bgcolor: theme.palette.background.default,
                 }}
             >
-                {page === "algoOutput" && <AlgoOutputProcessorPage />}
+                {page === "algoOutput" && <AlgoOutputProcessorPage accounts={accounts} />}
                 {page === "marketCap" && <StockToolsPage tool="marketCap" accounts={accounts} />}
                 {page === "earnings" && <StockToolsPage tool="earnings" accounts={accounts} />}
                 {page === "modelPortfolio" && <ModelPortfolioToolPage accounts={accounts} />}

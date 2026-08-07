@@ -16,6 +16,16 @@ POLYGON_BASE_URL = os.environ.get("POLYGON_BASE_URL", "https://api.polygon.io")
 MAX_SOURCE_TICKERS = 1000
 MAX_EARNINGS_TICKERS = 300
 MAX_ALGO_ROWS = 1000
+PORTFOLIO_TICKER_PATTERN = re.compile(
+    r"\$?[A-Z][A-Z0-9]{0,4}(?:[.\-][A-Z0-9]+)?",
+    re.IGNORECASE,
+)
+PORTFOLIO_TARGET_ALLOCATION_PATTERN = re.compile(
+    r"\btarget\s+allocation\s+of\s+"
+    r"(\$?[A-Z][A-Z0-9]{0,4}(?:[.\-][A-Z0-9]+)?)"
+    r"(?=\s+is\b)",
+    re.IGNORECASE,
+)
 
 
 class ToolDataError(RuntimeError):
@@ -386,13 +396,62 @@ def _parse_algo_output_rows(raw_text: str) -> tuple[list[dict], list[str]]:
     return parsed_rows, warnings
 
 
-def _text_contains_ticker(raw_text: str, ticker: str) -> bool:
-    text = str(raw_text or "").upper()
-    normalized_ticker = str(ticker or "").upper().strip()
-    if not text or not normalized_ticker:
-        return False
-    pattern = rf"(?<![A-Z0-9]){re.escape(normalized_ticker)}(?![A-Z0-9])"
-    return re.search(pattern, text) is not None
+def _portfolio_ticker_from_cell(value: str) -> str | None:
+    candidate = str(value or "").strip()
+    if not PORTFOLIO_TICKER_PATTERN.fullmatch(candidate):
+        return None
+    tickers = normalize_tickers(candidate)
+    return tickers[0] if tickers else None
+
+
+def _parse_portfolio_tickers(raw_text: str) -> list[str]:
+    text = str(raw_text or "")
+    nonblank_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not nonblank_lines:
+        raise ToolDataError("Paste the current portfolio holdings", 400)
+
+    detected = []
+
+    for match in PORTFOLIO_TARGET_ALLOCATION_PATTERN.finditer(text):
+        ticker = _portfolio_ticker_from_cell(match.group(1))
+        if ticker:
+            detected.append(ticker)
+
+    tabular_rows = [next(csv.reader([line], delimiter="\t"), []) for line in nonblank_lines]
+    symbol_column = None
+    header_index = None
+    for idx, row in enumerate(tabular_rows):
+        normalized_columns = [_normalize_header_name(column) for column in row]
+        if "symbol" in normalized_columns:
+            symbol_column = normalized_columns.index("symbol")
+            header_index = idx
+            break
+
+    if (
+        symbol_column is not None
+        and header_index is not None
+        and len(tabular_rows[header_index]) > 1
+    ):
+        for row in tabular_rows[header_index + 1:]:
+            if len(row) <= 1 or symbol_column >= len(row):
+                continue
+            ticker = _portfolio_ticker_from_cell(row[symbol_column])
+            if ticker:
+                detected.append(ticker)
+
+    if not detected:
+        plain_tickers = [_portfolio_ticker_from_cell(line) for line in nonblank_lines]
+        if all(plain_tickers):
+            detected.extend(plain_tickers)
+
+    tickers = normalize_tickers(detected)
+    if not tickers:
+        raise ToolDataError(
+            "Could not identify portfolio tickers. Paste a Fidelity target-allocation dump, "
+            "a table with a Symbol column, or one ticker per line.",
+            400,
+        )
+    return tickers
 
 
 def _snapshot_quote_from_item(item: dict) -> dict:
@@ -490,20 +549,20 @@ def _price_signal_rows(raw_text: str, api_key: str | None = None) -> tuple[list[
         "hold": 0,
         "unpriced": 0,
     }
-    classified_rows = []
+    price_rows = []
 
     for row in parsed_rows:
         quote = quotes.get(row["ticker"]) or {}
         live_price = _positive_float(quote.get("livePrice"))
         classification = _classify_algo_price(live_price, row["targetBuyPrice"], row["targetSellPrice"])
+        price_rows.append({**row, "classification": classification})
         if classification is None:
             summary["unpriced"] += 1
             warnings.append(f"{row['ticker']}: live price was unavailable from Polygon.")
         else:
             summary[classification] += 1
-            classified_rows.append({**row, "classification": classification})
 
-    return classified_rows, summary, warnings
+    return price_rows, summary, warnings
 
 
 def _price_signals_from_rows(classified_rows: list[dict], summary: dict, warnings: list[str]) -> dict:
@@ -526,11 +585,9 @@ def _algo_price_signals(raw_text: str, api_key: str | None = None) -> dict:
 
 
 def _portfolio_action_signals(price_rows: list[dict], raw_text: str) -> dict:
-    held_tickers = {
-        row["ticker"]
-        for row in price_rows
-        if _text_contains_ticker(raw_text, row["ticker"])
-    }
+    held_tickers = set(_parse_portfolio_tickers(raw_text))
+    algo_tickers = {row["ticker"] for row in price_rows}
+    missing_from_algo = held_tickers - algo_tickers
     classified_rows = []
     unpriced = 0
 
@@ -550,12 +607,19 @@ def _portfolio_action_signals(price_rows: list[dict], raw_text: str) -> dict:
             "classification": action_classification,
         })
 
+    classified_rows.extend(
+        {"ticker": ticker, "classification": "sell"}
+        for ticker in sorted(missing_from_algo)
+    )
+
     groups, summary = _build_groups_summary(classified_rows)
-    summary["total"] = len(price_rows)
+    summary["total"] = len(price_rows) + len(missing_from_algo)
     summary["unpriced"] = unpriced
     return {
         "groups": groups,
         "summary": summary,
+        "detectedPortfolioTickers": sorted(held_tickers),
+        "missingFromAlgo": sorted(missing_from_algo),
         "warnings": [],
     }
 
